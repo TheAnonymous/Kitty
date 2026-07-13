@@ -1,0 +1,17 @@
+{
+  "name": "@kitty/app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit -p tsconfig.json && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json --pretty false"
+  },
+  "dependencies": {
+    "@kinky-vibes/ui": "0.1.0",
+    "tone": "15.5.27",
+    "vue": "3.5.39"
+  }
+}

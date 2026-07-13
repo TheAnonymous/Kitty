@@ -1,0 +1,10 @@
+node_modules/
+dist/
+!packages/ui/dist/
+!packages/ui/dist/**
+coverage/
+test-results/
+playwright-report/
+*.log
+*.tsbuildinfo
+.DS_Store

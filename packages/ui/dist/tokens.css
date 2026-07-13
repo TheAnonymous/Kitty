@@ -1,0 +1,72 @@
+:root,
+[data-kv-root] {
+  color-scheme: dark;
+
+  --kv-color-void: #090909;
+  --kv-color-bg: #0d0d0e;
+  --kv-color-surface: #151516;
+  --kv-color-surface-raised: #1c1c1e;
+  --kv-color-surface-sunken: #101011;
+  --kv-color-steel: #29292c;
+  --kv-color-steel-bright: #3a3a3e;
+  --kv-color-border: #444449;
+  --kv-color-border-strong: #68686f;
+  --kv-color-text: #e9e4d8;
+  --kv-color-text-muted: #a29e96;
+  --kv-color-text-faint: #74716c;
+  --kv-color-signal: #e22832;
+  --kv-color-signal-hover: #ff3842;
+  --kv-color-signal-active: #ba111b;
+  --kv-color-on-signal: #fff8ed;
+  --kv-color-info: #72a7c7;
+  --kv-color-success: #72a278;
+  --kv-color-warning: #d2a63d;
+  --kv-color-error: #ed4b54;
+  --kv-color-focus: #f0cf63;
+
+  --kv-font-body: "KV Inter", Inter, ui-sans-serif, system-ui, sans-serif;
+  --kv-font-display: "KV Saira", "KV Barlow Condensed", "Arial Narrow", ui-sans-serif, sans-serif;
+  --kv-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --kv-font-body-weight: 440;
+  --kv-font-display-weight: 820;
+  --kv-font-display-width: 58;
+  --kv-font-size-xs: 0.6875rem;
+  --kv-font-size-sm: 0.8125rem;
+  --kv-font-size-md: 0.9375rem;
+  --kv-font-size-lg: 1.125rem;
+  --kv-font-size-xl: 1.5rem;
+  --kv-font-size-2xl: clamp(2rem, 5vw, 3.75rem);
+  --kv-line-height-tight: 0.82;
+  --kv-line-height-body: 1.48;
+  --kv-letter-display: -0.018em;
+  --kv-letter-label: 0.135em;
+
+  --kv-space-1: 0.25rem;
+  --kv-space-2: 0.5rem;
+  --kv-space-3: 0.75rem;
+  --kv-space-4: 1rem;
+  --kv-space-5: 1.5rem;
+  --kv-space-6: 2rem;
+  --kv-space-7: 3rem;
+  --kv-space-8: 4rem;
+
+  --kv-control-sm: 2rem;
+  --kv-control-md: 2.625rem;
+  --kv-control-lg: 3.25rem;
+  --kv-radius-sm: 1px;
+  --kv-radius-md: 2px;
+  --kv-border: 1px solid var(--kv-color-border);
+  --kv-border-strong: 1px solid var(--kv-color-border-strong);
+  --kv-shadow-hard: 4px 4px 0 #000;
+  --kv-shadow-signal: 4px 4px 0 #62070d;
+  --kv-shadow-overlay: 8px 8px 0 rgb(0 0 0 / 65%);
+  --kv-z-dropdown: 900;
+  --kv-z-overlay: 1000;
+  --kv-z-toast: 1100;
+  --kv-duration-fast: 90ms;
+  --kv-duration-normal: 160ms;
+  --kv-ease-mechanical: cubic-bezier(0.2, 0, 0, 1);
+  --kv-container-sm: 42rem;
+  --kv-container-md: 64rem;
+  --kv-container-lg: 80rem;
+}
