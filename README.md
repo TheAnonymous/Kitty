@@ -7,7 +7,7 @@ synthetisiert, Projekte bleiben im `localStorage` des Browsers.
 
 ## Loslegen
 
-Voraussetzungen sind exakt Node.js 24.12.0 und npm 12.0.0.
+Voraussetzungen sind exakt Node.js 24.15.0 und npm 12.0.0.
 
 ```bash
 npm ci
