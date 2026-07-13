@@ -1,5 +1,5 @@
 import { createTransportState, createUiState } from "../domain/defaults";
-import { cycleStep, replaceWithTypical, sanitizeDrumVoices, varyPattern } from "../domain/patterns";
+import { activateStep, emptyStep, replaceWithTypical, sanitizeDrumVoices, varyPattern } from "../domain/patterns";
 import { sanitizeProject } from "../domain/sanitize";
 import type {
   AppState,
@@ -34,7 +34,8 @@ export type Action =
   | { type: "mix/mute"; track: TrackKind }
   | { type: "mix/solo"; track: TrackKind }
   | { type: "mix/volume"; track: TrackKind; value: number }
-  | { type: "step/cycle"; bar: number; step: number }
+  | { type: "step/press"; bar: number; step: number }
+  | { type: "step/disable" }
   | { type: "step/drum-voice"; voice: DrumVoice }
   | { type: "step/degree"; value: number }
   | { type: "step/octave"; value: number }
@@ -128,7 +129,22 @@ export class KittyStore {
       case "mix/mute": { const mix = project.mix.find((entry) => entry.instrument === action.track); if (!mix) return false; mix.muted = !mix.muted; if (mix.muted) mix.solo = false; return true; }
       case "mix/solo": { const mix = project.mix.find((entry) => entry.instrument === action.track); if (!mix) return false; mix.solo = !mix.solo; if (mix.solo) mix.muted = false; return true; }
       case "mix/volume": { const mix = project.mix.find((entry) => entry.instrument === action.track); return mix ? assign(mix, "volume", clampNumber(action.value, 0, 1)) : false; }
-      case "step/cycle": { const step = findStep(this.state, action.bar, action.step); if (!step) return false; Object.assign(step, cycleStep(step, ui.selectedTrack, action.step)); ui.selectedBar = action.bar; ui.selectedStep = action.step; return true; }
+      case "step/press": {
+        const bar = clamp(action.bar, 0, 3);
+        const stepIndex = clamp(action.step, 0, 15);
+        const step = findStep(this.state, bar, stepIndex);
+        ui.selectedBar = bar;
+        ui.selectedStep = stepIndex;
+        if (!step || step.enabled) return false;
+        Object.assign(step, activateStep(ui.selectedTrack, stepIndex));
+        return true;
+      }
+      case "step/disable": {
+        const step = selectedStep(this.state);
+        if (!step?.enabled) return false;
+        Object.assign(step, emptyStep());
+        return true;
+      }
       case "step/drum-voice": return this.toggleDrumVoice(action.voice);
       case "step/degree": { const step = selectedStep(this.state); return step?.enabled ? assign(step, "degree", clamp(action.value, 0, 6)) : false; }
       case "step/octave": { const step = selectedStep(this.state); return step?.enabled ? assign(step, "octave", clamp(action.value, 1, 5)) : false; }

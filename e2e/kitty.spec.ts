@@ -39,6 +39,18 @@ test("merkt Szenen an der nächsten Taktgrenze vor", async ({ page }) => {
   await expect(page.locator(".transport-readout")).toContainText("Szene 4 startet am nächsten Takt");
 });
 
+test("wählt belegte Steps ohne Typänderung und schaltet sie ausdrücklich aus", async ({ page }) => {
+  const existing = page.locator('.kitty-step[data-bar="0"][data-step="0"]');
+  const label = await existing.getAttribute("aria-label");
+
+  await existing.click();
+
+  await expect(existing).toHaveClass(/is-selected/);
+  await expect(existing).toHaveAttribute("aria-label", label!);
+  await page.getByRole("button", { name: "Step ausschalten" }).click();
+  await expect(existing).toHaveAttribute("aria-label", /aus$/);
+});
+
 test("speichert Steps automatisch und rekonstruiert sie nach Reload", async ({ page }) => {
   const step = page.locator('.kitty-step[data-bar="0"][data-step="1"]');
   await step.click();

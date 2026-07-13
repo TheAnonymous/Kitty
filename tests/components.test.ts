@@ -15,7 +15,7 @@ describe("zugängliche Vue-Bedienung", () => {
     await cells[0]!.trigger("keydown", { key: "ArrowRight" });
     expect(document.activeElement).toBe(cells[1]!.element);
     await cells[1]!.trigger("keydown", { key: "Enter" });
-    expect(wrapper.emitted("cycle")?.at(-1)).toEqual([0, 1]);
+    expect(wrapper.emitted("press")?.at(-1)).toEqual([0, 1]);
     expect(wrapper.findAll(".kitty-step")).toHaveLength(64);
     wrapper.unmount();
   });

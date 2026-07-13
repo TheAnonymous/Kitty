@@ -34,6 +34,22 @@ describe("vollständiges Sanitizing", () => {
 });
 
 describe("zentraler Store", () => {
+  it("wählt einen belegten Step aus, ohne seinen Klangtyp zu verändern", () => {
+    const store = new KittyStore(createFactoryProject());
+    const existing = structuredClone(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[0]!);
+
+    store.dispatch({ type: "step/press", bar: 0, step: 0 });
+
+    expect(store.getState().ui).toMatchObject({ selectedBar: 0, selectedStep: 0 });
+    expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[0]).toEqual(existing);
+    expect(store.getState().canUndo).toBe(false);
+
+    store.dispatch({ type: "step/press", bar: 0, step: 1 });
+    expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[1]!.enabled).toBe(true);
+    store.dispatch({ type: "step/disable" });
+    expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[1]!.enabled).toBe(false);
+  });
+
   it("nimmt UI-Auswahl nicht in Undo auf und macht Musikänderungen rückgängig", () => {
     const store = new KittyStore(createFactoryProject());
     store.dispatch({ type: "ui/select-track", track: "rave" });

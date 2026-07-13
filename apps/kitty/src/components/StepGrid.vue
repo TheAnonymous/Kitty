@@ -13,7 +13,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  cycle: [bar: number, step: number];
+  press: [bar: number, step: number];
   selectBar: [bar: number];
   toggleLock: [bar: number];
 }>();
@@ -29,7 +29,7 @@ function focus(index: number): void {
 function onKeydown(event: KeyboardEvent, index: number): void {
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
-    emit("cycle", Math.floor(index / 16), index % 16);
+    emit("press", Math.floor(index / 16), index % 16);
     return;
   }
   let target: number | null = null;
@@ -87,7 +87,7 @@ function stepLabel(bar: number, step: number): string {
           :tabindex="focused === barIndex * 16 + stepIndex ? 0 : -1"
           @focus="focused = barIndex * 16 + stepIndex"
           @keydown="onKeydown($event, barIndex * 16 + stepIndex)"
-          @click="emit('cycle', barIndex, stepIndex)"
+          @click="emit('press', barIndex, stepIndex)"
         >
           <span class="step-number">{{ stepIndex + 1 }}</span>
           <span v-if="step.enabled" class="step-mark" aria-hidden="true" />

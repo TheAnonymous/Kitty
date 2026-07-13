@@ -326,14 +326,20 @@ onBeforeUnmount(() => {
           :playhead-bar="state.transport.bar"
           :playhead-step="state.transport.step"
           :playing="isPlaying && state.transport.runningScene === state.ui.selectedScene"
-          @cycle="(bar, stepIndex) => dispatch({ type: 'step/cycle', bar, step: stepIndex })"
+          @press="(bar, stepIndex) => dispatch({ type: 'step/press', bar, step: stepIndex })"
           @select-bar="(bar) => dispatch({ type: 'ui/select-bar', bar })"
           @toggle-lock="(bar) => dispatch({ type: 'ui/toggle-lock', bar })"
         />
-        <p class="grid-help">Pfeiltasten bewegen den Fokus · Enter setzt einen Step · Schloss schützt den Takt vor Generatoren</p>
+        <p class="grid-help">Klick oder Enter wählt einen Step; freie Steps werden aktiviert · Ausschalten erfolgt in den Step-Details · Schloss schützt den Takt vor Generatoren</p>
 
         <KvCard class="step-editor" padding="sm">
-          <template #header><h3>Step-Details</h3><KvBadge v-if="step?.enabled" status="success">Takt {{ state.ui.selectedBar + 1 }} · Step {{ (state.ui.selectedStep ?? 0) + 1 }}</KvBadge></template>
+          <template #header>
+            <h3>Step-Details</h3>
+            <div v-if="step?.enabled" class="step-editor-actions">
+              <KvBadge status="success">Takt {{ state.ui.selectedBar + 1 }} · Step {{ (state.ui.selectedStep ?? 0) + 1 }}</KvBadge>
+              <KvButton variant="ghost" size="sm" @click="dispatch({ type: 'step/disable' })">Step ausschalten</KvButton>
+            </div>
+          </template>
           <p v-if="!step?.enabled" class="empty-step">Wähle oder aktiviere einen Step im Raster.</p>
           <div v-else-if="selectedTrack === 'drums'" class="drum-voices" role="group" aria-label="Drum-Stimmen">
             <button

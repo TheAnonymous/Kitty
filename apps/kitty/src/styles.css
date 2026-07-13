@@ -214,6 +214,7 @@ button { touch-action: manipulation; }
 .step-editor { min-height: 99px; }
 .step-editor .kv-card__header, .sound-panel .kv-card__header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .step-editor h3, .sound-panel h3 { margin: 0; font-family: var(--kv-font-display); font-size: 17px; text-transform: uppercase; }
+.step-editor-actions { display: flex; align-items: center; gap: 6px; }
 .step-editor .kv-card__body { padding-top: 5px; }
 .empty-step { margin: 12px 0; color: var(--kv-color-text-muted); font-size: 12px; }
 .drum-voices { display: flex; align-items: center; gap: 5px; }

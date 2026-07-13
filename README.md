@@ -29,7 +29,8 @@ npm run verify
 - `V`: Variation in der gewählten Stärke
 - `R`: typisches Pattern für Spur und Profil
 - `Strg/Cmd+Z`, `Strg/Cmd+Umschalt+Z` oder `Strg/Cmd+Y`: Undo/Redo
-- Pfeiltasten und Enter: Step-Raster bedienen
+- Klick oder Enter: vorhandenen Step auswählen, freien Step aktivieren
+- `Step ausschalten`: den im Detailbereich ausgewählten Step entfernen
 
 Die Profile Hard, Acid und Hybrid werden ausschließlich beim bewussten
 Erstellen eines neuen Projekts angewendet. Spätere Änderungen an Tempo,

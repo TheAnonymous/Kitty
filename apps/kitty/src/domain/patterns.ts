@@ -131,16 +131,12 @@ export function generateTypicalPattern(
   });
 }
 
-export function cycleStep(step: Step, track: TrackKind, stepIndex: number): Step {
-  if (!step.enabled) {
-    const next = emptyStep();
-    next.enabled = true;
-    next.drumVoices = track === "drums" ? defaultDrums(stepIndex) : [];
-    next.octave = track === "acid" ? 2 : track === "stab" ? 3 : 4;
-    return next;
-  }
-  if (step.dynamics === "normal") return { ...step, drumVoices: [...step.drumVoices], dynamics: "accent" };
-  return emptyStep();
+export function activateStep(track: TrackKind, stepIndex: number): Step {
+  const next = emptyStep();
+  next.enabled = true;
+  next.drumVoices = track === "drums" ? defaultDrums(stepIndex) : [];
+  next.octave = track === "acid" ? 2 : track === "stab" ? 3 : 4;
+  return next;
 }
 
 export function varyPattern(pattern: TrackPattern, amount: VariationAmount, locks: readonly boolean[]): boolean {
