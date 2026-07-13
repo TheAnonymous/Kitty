@@ -5,6 +5,8 @@ Techno-Groovebox. Sie läuft ohne Konto, Backend, Samples oder externe Requests
 in einem aktuellen Chromium-Browser. Alle Klänge werden lokal mit Tone.js
 synthetisiert, Projekte bleiben im `localStorage` des Browsers.
 
+**[Kitty direkt im Browser öffnen](https://theanonymous.github.io/Kitty/)**
+
 ## Loslegen
 
 Voraussetzungen sind exakt Node.js 24.15.0 und npm 12.0.0.
@@ -51,11 +53,11 @@ rekonstruiert und geklemmt.
 
 ## GitHub Pages
 
-Vite baut mit dem Basis-Pfad `/Kitty/`. Nach der lokalen Abnahme kann das
-öffentliche Repository `TheAnonymous/Kitty` erstellt, `main` gepusht und unter
-Settings → Pages die Quelle **GitHub Actions** gewählt werden. Der gepinnte
-Workflow prüft Lint, Typen, Unit-/A11y-Tests, Build und Chromium-E2E, bevor er
-das offizielle Pages-Artefakt veröffentlicht.
+Die aktuelle Version läuft unter
+**[theanonymous.github.io/Kitty](https://theanonymous.github.io/Kitty/)**.
+Vite baut mit dem Basis-Pfad `/Kitty/`. Bei jedem Push auf `main` prüft der
+gepinnte Workflow Lint, Typen, Unit-/A11y-Tests, Build und Chromium-E2E, bevor
+er das offizielle Pages-Artefakt veröffentlicht.
 
 ## Grenzen von V1
 
