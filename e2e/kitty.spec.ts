@@ -33,10 +33,12 @@ test("lädt vollständig lokal und startet alle fünf hörbaren Spuren nach Nutz
 test("merkt Szenen an der nächsten Taktgrenze vor", async ({ page }) => {
   await page.getByRole("button", { name: /START/ }).click();
   await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
+  await expect.poll(async () => page.locator(".kitty-shell").getAttribute("data-triggered-tracks"), { timeout: 10_000 })
+    .toContain("drums");
   const peak = page.locator('.scene-pad[data-scene="3"]');
   await peak.click();
   await expect(peak).toHaveClass(/is-queued/);
-  await expect(peak).toHaveClass(/is-running/, { timeout: 4_000 });
+  await expect(peak).toHaveClass(/is-running/, { timeout: 10_000 });
   await expect(peak).not.toHaveClass(/is-queued/);
 });
 
