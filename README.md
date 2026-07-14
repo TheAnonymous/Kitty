@@ -1,5 +1,7 @@
 # Kitty
 
+[![Kitty Groovebox in einer dunklen Warehouse-Umgebung](docs/assets/kitty-hero.webp)](https://theanonymous.github.io/Kitty/)
+
 Kitty ist eine anfängerfreundliche, vollständig clientseitige Hard-/Acid-
 Techno-Groovebox. Sie läuft ohne Konto, Backend, Samples oder externe Requests
 in einem aktuellen Chromium-Browser. Alle Klänge werden lokal mit Tone.js
@@ -22,6 +24,10 @@ lokale Abnahme:
 ```bash
 npm run verify
 ```
+
+## Oberfläche
+
+[![Kitty mit Step-Raster, Szenen, Klangfarben und Makros](docs/assets/kitty-interface.webp)](https://theanonymous.github.io/Kitty/)
 
 ## Bedienung
 

@@ -20,6 +20,8 @@ test("lädt vollständig lokal und startet alle fünf hörbaren Spuren nach Nutz
   await expect(page.locator(".scene-pad")).toHaveCount(4);
   await expect(page.locator(".mixer-channel")).toHaveCount(5);
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", "/Kitty/favicon.svg");
+  await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute("href", "/Kitty/apple-touch-icon.png");
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", "https://theanonymous.github.io/Kitty/kitty-social.jpg");
   await page.getByRole("button", { name: /START/ }).click();
   await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
 
