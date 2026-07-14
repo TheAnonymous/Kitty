@@ -32,6 +32,7 @@ export interface PlayheadEvent extends SequencerPosition { peak: number; trackPe
 
 interface TrackStrip extends TrackGraph {
   meter: PeakMeter;
+  parameterKey: string;
 }
 
 interface PeakMeter {
@@ -72,6 +73,7 @@ export class ToneAudioEngine {
   private appliedMasterVolume: number | null = null;
   private scheduleId: number | null = null;
   private meterFrame: number | null = null;
+  private lastMeterRead = 0;
   private peak = 0;
   private trackPeaks = zeroPeaks();
   private readonly clock = new BarQueuedTransport();
@@ -170,7 +172,7 @@ export class ToneAudioEngine {
       const macros = this.patternFor(this.clock.runningScene, track)?.macros ?? { color: 0.5, pressure: 0.5, space: 0.5, motion: 0.5, density: 0.5 };
       const trackMeter = createPeakMeter();
       const graph = createTrackGraph(track, this.project.soundPresets[track], macros, gains[track], master.input, trackMeter.node);
-      strips[track] = { ...graph, meter: trackMeter };
+      strips[track] = { ...graph, meter: trackMeter, parameterKey: trackParameterKey(this.project.soundPresets[track], macros, false) };
     }
     this.strips = strips;
     await Promise.all(Object.values(strips).map((strip) => strip.ready));
@@ -211,6 +213,9 @@ export class ToneAudioEngine {
   }
 
   private applyMacros(strip: TrackStrip, macros: TrackMacros, track: TrackKind, preset: SoundPresetId, accent = false, time?: number): void {
+    const parameterKey = trackParameterKey(preset, macros, accent);
+    if (strip.parameterKey === parameterKey) return;
+    strip.parameterKey = parameterKey;
     const duration = time === undefined ? 0.08 : 0.025;
     applyTrackGraphParameters(strip, track, preset, macros, duration, time, accent);
   }
@@ -307,15 +312,14 @@ export class ToneAudioEngine {
     }
   }
 
-  private monitorMeters(): void {
+  private monitorMeters(timestamp = performance.now()): void {
     if (!this.initialized) return;
-    const master = this.masterMeter?.getValue() ?? 0;
-    this.peak = master;
-    for (const track of TRACK_KINDS) {
-      const value = this.strips?.[track].meter.getValue() ?? 0;
-      this.trackPeaks[track] = value;
+    if (timestamp - this.lastMeterRead >= 32) {
+      this.lastMeterRead = timestamp;
+      this.peak = this.masterMeter?.getValue() ?? 0;
+      for (const track of TRACK_KINDS) this.trackPeaks[track] = this.strips?.[track].meter.getValue() ?? 0;
     }
-    this.meterFrame = requestAnimationFrame(() => this.monitorMeters());
+    this.meterFrame = requestAnimationFrame((nextTimestamp) => this.monitorMeters(nextTimestamp));
   }
 
   private emitStatus(status: AudioStatusEvent["status"], message: string): void { for (const listener of this.statusListeners) listener({ status, message }); }
@@ -359,27 +363,22 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneA
     oscillator: { type: "triangle" },
     envelope: { attack: 0.001, decay: recipe.tom.decay, sustain: 0, release: 0.13 },
   }).connect(tomFilter);
-  const snareNoise = new Tone.NoiseSynth({ noise: { type: recipe.snare.noise }, envelope: { attack: 0.001, decay: recipe.snare.decay, sustain: 0, release: 0.07 } }).connect(snareFilter);
-  const clapNoises = Array.from({ length: 3 }, () => new Tone.NoiseSynth({ noise: { type: "white" }, envelope: { attack: 0.001, decay: recipe.clap.decay, sustain: 0, release: 0.04 } }).connect(clapFilter));
-  const activeHats = new Set<Tone.MetalSynth>();
-  const hatTimers = new Set<ReturnType<typeof setTimeout>>();
-  const triggerHat = (decay: number, target: Tone.ToneAudioNode, noteLength: Tone.Unit.Time, time: number, velocity: number) => {
-    const hat = createMetalHat(recipe.hats, decay, target);
-    activeHats.add(hat);
-    hat.triggerAttackRelease(recipe.hats.frequency, noteLength, time, velocity);
-    if (Tone.getContext().name !== "OfflineContext") {
-      const delayMs = Math.max(0, (time - Tone.now() + decay + Math.max(0.025, decay * 0.45) + 0.1) * 1_000);
-      const timer = setTimeout(() => {
-        activeHats.delete(hat);
-        hat.dispose();
-        hatTimers.delete(timer);
-      }, delayMs);
-      hatTimers.add(timer);
-    }
+  // One shared synthetic noise source feeds independent envelopes. This keeps
+  // the six drum identities and overlapping clap/hat transients without
+  // running a separate full-band source for every layer.
+  const drumNoise = new Tone.Noise(recipe.snare.noise).start();
+  const snareNoise = new Tone.AmplitudeEnvelope({ attack: 0.001, decay: recipe.snare.decay, sustain: 0, release: 0.07 }).connect(snareFilter);
+  const clapNoises = Array.from({ length: 3 }, () => new Tone.AmplitudeEnvelope({ attack: 0.001, decay: recipe.clap.decay, sustain: 0, release: 0.04 }).connect(clapFilter));
+  const closedHat = new Tone.AmplitudeEnvelope({ attack: 0.001, decay: recipe.hats.closedDecay, sustain: 0, release: Math.max(0.025, recipe.hats.closedDecay * 0.45) }).connect(closedHatFilter);
+  const openHat = new Tone.AmplitudeEnvelope({ attack: 0.001, decay: recipe.hats.openDecay, sustain: 0, release: Math.max(0.025, recipe.hats.openDecay * 0.45) }).connect(openHatFilter);
+  drumNoise.fan(snareNoise, ...clapNoises, closedHat, openHat);
+  const triggerHat = (hat: Tone.AmplitudeEnvelope, noteLength: Tone.Unit.Time, time: number, velocity: number) => {
+    hat.triggerAttackRelease(noteLength, time, velocity);
   };
   const transient = recipe.kick.transient > 0
-    ? new Tone.NoiseSynth({ noise: { type: "white" }, envelope: { attack: 0.0005, decay: 0.018, sustain: 0, release: 0.012 } }).connect(output)
+    ? new Tone.AmplitudeEnvelope({ attack: 0.0005, decay: 0.018, sustain: 0, release: 0.012 }).connect(output)
     : null;
+  if (transient) drumNoise.connect(transient);
   const subHighpass = recipe.kick.subTail
     ? new Tone.Filter({ type: "highpass", frequency: 40, rolloff: -24 })
     : null;
@@ -396,7 +395,7 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneA
   const subTail = recipe.kick.subTail && subHighpass
     ? new Tone.MembraneSynth({ pitchDecay: 0.018, octaves: 1.6, oscillator: { type: "triangle" }, envelope: { attack: 0.003, decay: recipe.kick.subTail.decay, sustain: 0, release: recipe.kick.subTail.release } }).connect(subHighpass)
     : null;
-  const nodes: Tone.ToneAudioNode[] = [kick, snareBody, tom, snareNoise, ...clapNoises, snareFilter, snarePan, clapFilter, clapPan, closedHatFilter, closedHatPan, openHatFilter, openHatPan, tomFilter, tomPan, output];
+  const nodes: Tone.ToneAudioNode[] = [kick, snareBody, tom, drumNoise, snareNoise, ...clapNoises, closedHat, openHat, snareFilter, snarePan, clapFilter, clapPan, closedHatFilter, closedHatPan, openHatFilter, openHatPan, tomFilter, tomPan, output];
   if (transient) nodes.push(transient);
   if (subHighpass && subFilter && subSaturator && subTail) nodes.push(subTail, subHighpass, subFilter, subSaturator);
   const trigger = (voice: DrumVoice, step: Step, time: number, velocity: number) => {
@@ -410,8 +409,8 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneA
       snareBody.triggerAttackRelease(recipe.snare.bodyNote, "32n", voiceTime, velocity * recipe.snare.bodyLevel);
     } else if (voice === "clap") {
       [0, recipe.clap.spacing, recipe.clap.spacing * 2].forEach((offset, index) => clapNoises[index]!.triggerAttackRelease(recipe.clap.decay, voiceTime + offset, velocity * recipe.clap.level * (1 - index * 0.14)));
-    } else if (voice === "closedHat") triggerHat(recipe.hats.closedDecay, closedHatFilter, "32n", voiceTime, velocity * recipe.hats.level);
-    else if (voice === "openHat") triggerHat(recipe.hats.openDecay, openHatFilter, "8n", voiceTime, velocity * recipe.hats.level * 0.82);
+    } else if (voice === "closedHat") triggerHat(closedHat, "32n", voiceTime, velocity * recipe.hats.level);
+    else if (voice === "openHat") triggerHat(openHat, "8n", voiceTime, velocity * recipe.hats.level * 0.82);
     else tom.triggerAttackRelease(recipe.tom.note, "8n", voiceTime, velocity * recipe.tom.level);
   };
   return {
@@ -427,26 +426,11 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneA
     },
     release: (time) => {
       [kick, snareBody, tom, snareNoise, ...clapNoises, transient, subTail].forEach((voice) => voice?.triggerRelease(time));
-      activeHats.forEach((hat) => hat.triggerRelease(time));
+      closedHat.triggerRelease(time);
+      openHat.triggerRelease(time);
     },
-    dispose: () => {
-      hatTimers.forEach((timer) => clearTimeout(timer));
-      activeHats.forEach((hat) => hat.dispose());
-      nodes.forEach((node) => node.dispose());
-    },
+    dispose: () => nodes.forEach((node) => node.dispose()),
   };
-}
-
-function createMetalHat(recipe: ReturnType<typeof presetDefinition<"drums">>["synthesis"]["hats"], decay: number, destination: Tone.ToneAudioNode): Tone.MetalSynth {
-  const hat = new Tone.MetalSynth({
-    harmonicity: recipe.harmonicity,
-    modulationIndex: recipe.modulationIndex,
-    resonance: recipe.resonance,
-    octaves: recipe.octaves,
-    envelope: { attack: 0.001, decay, release: Math.max(0.025, decay * 0.45) },
-  }).connect(destination);
-  hat.frequency.value = recipe.frequency;
-  return hat;
 }
 
 function createAcidBank(preset: SoundPresetMap["acid"], destination: Tone.ToneAudioNode): VoiceBank {
@@ -673,6 +657,9 @@ function dynamicsVelocity(step: Step): number { return step.dynamics === "ghost"
 function duration(step: Step): Tone.Unit.Time { return step.length === "short" ? "32n" : step.length === "long" ? "8n" : "16n"; }
 function zeroPeaks(): Record<TrackKind, number> { return Object.fromEntries(TRACK_KINDS.map((track) => [track, 0])) as Record<TrackKind, number>; }
 function clamp01(value: number): number { return Math.max(0, Math.min(1, value)); }
+function trackParameterKey(preset: SoundPresetId, macros: TrackMacros, accent: boolean): string {
+  return [preset, macros.color, macros.pressure, macros.space, macros.motion, accent ? 1 : 0].join(":");
+}
 
 function createPeakMeter(): PeakMeter {
   const node = Tone.getContext().createAnalyser();
@@ -687,8 +674,12 @@ function createPeakMeter(): PeakMeter {
     node,
     getValue: () => {
       node.getFloatTimeDomainData(samples);
-      const sum = samples.reduce((total, sample) => total + sample * sample, 0);
-      const peak = samples.reduce((maximum, sample) => Math.max(maximum, Math.abs(sample)), 0);
+      let sum = 0;
+      let peak = 0;
+      for (const sample of samples) {
+        sum += sample * sample;
+        peak = Math.max(peak, Math.abs(sample));
+      }
       const rmsDb = Math.max(-60, rmsToDb(Math.sqrt(sum / samples.length)));
       const peakDb = Math.max(-60, rmsToDb(peak));
       const now = performance.now();

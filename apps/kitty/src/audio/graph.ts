@@ -61,6 +61,74 @@ export class CharacterSaturator extends Tone.ToneAudioNode {
   }
 }
 
+interface DelayTap {
+  delay: Tone.Delay;
+  gain: Tone.Gain;
+  panner: Tone.Panner | null;
+}
+
+function createDelayTap(input: Tone.Gain, output: Tone.Gain, seconds: number, gainValue: number, pan: number | null): DelayTap {
+  const delay = new Tone.Delay(seconds, seconds + 0.1);
+  const gain = new Tone.Gain(gainValue);
+  const panner = pan === null ? null : new Tone.Panner(pan);
+  input.chain(delay, gain);
+  if (panner) gain.chain(panner, output);
+  else gain.connect(output);
+  return { delay, gain, panner };
+}
+
+export class WarehouseDelay extends Tone.ToneAudioNode {
+  readonly name = "WarehouseDelay";
+  readonly input = new Tone.Gain(1);
+  readonly output = new Tone.Gain(1);
+  private readonly taps: DelayTap[];
+
+  constructor(delayTime: Tone.Unit.Time, stereo: boolean, feedback: number) {
+    super();
+    const seconds = Tone.Time(delayTime).toSeconds();
+    const pans = stereo ? [-0.64, 0.64, -0.36, 0.36] : [null, null, null, null];
+    this.taps = [1, 2, 3, 4].map((multiple, index) => createDelayTap(this.input, this.output, seconds * multiple, index === 0 ? 0.72 : 0, pans[index]!));
+    this.setFeedback(feedback, 0.001);
+  }
+
+  setFeedback(feedback: number, duration: number, time?: number): void {
+    const safe = Math.max(0, Math.min(0.32, feedback));
+    const gains = [0.72, safe * 0.62, safe * safe * 0.85, safe * safe * safe * 1.1];
+    this.taps.forEach((tap, index) => tap.gain.gain.rampTo(gains[index]!, duration, time));
+  }
+
+  override dispose(): this {
+    super.dispose();
+    this.taps.forEach(({ delay, gain, panner }) => { delay.dispose(); gain.dispose(); panner?.dispose(); });
+    return this;
+  }
+}
+
+export class WarehouseReverb extends Tone.ToneAudioNode {
+  readonly name = "WarehouseReverb";
+  readonly input = new Tone.Gain(1);
+  readonly output = new Tone.Gain(1);
+  private readonly taps: DelayTap[];
+
+  constructor(decay: number, preDelay: number) {
+    super();
+    const safeDecay = Math.max(0.4, Math.min(4, decay));
+    const ratios = [0.012, 0.029, 0.061, 0.113, 0.207, 0.371, 0.641, 0.91];
+    const pans = [-0.2, 0.24, -0.46, 0.42, -0.31, 0.34, -0.5, 0.48];
+    this.taps = ratios.map((ratio, index) => {
+      const seconds = preDelay + safeDecay * ratio;
+      const gain = 0.43 * Math.exp(-(seconds - preDelay) / (safeDecay * 0.55));
+      return createDelayTap(this.input, this.output, seconds, gain, pans[index]!);
+    });
+  }
+
+  override dispose(): this {
+    super.dispose();
+    this.taps.forEach(({ delay, gain, panner }) => { delay.dispose(); gain.dispose(); panner?.dispose(); });
+    return this;
+  }
+}
+
 export interface MasterGraph {
   input: Tone.Gain;
   fader: Tone.Gain;
@@ -93,11 +161,11 @@ export interface TrackGraph {
   compressor: Tone.Compressor;
   dry: Tone.Gain;
   delaySend: Tone.Gain;
-  delay: Tone.FeedbackDelay | Tone.PingPongDelay;
+  delay: WarehouseDelay;
   delayHighpass: Tone.Filter;
   delayLowpass: Tone.Filter;
   reverbSend: Tone.Gain;
-  reverb: Tone.Reverb;
+  reverb: WarehouseReverb;
   reverbHighpass: Tone.Filter;
   reverbLowpass: Tone.Filter;
   sum: Tone.Gain;
@@ -141,13 +209,11 @@ export function createTrackGraph(
   const compressor = new Tone.Compressor({ threshold: parameters.threshold, ratio: parameters.ratio, ...channel.compressor });
   const dry = new Tone.Gain(1);
   const delaySend = new Tone.Gain(parameters.delayWet);
-  const delay = channel.delayReturn.stereo
-    ? new Tone.PingPongDelay({ delayTime: DELAY_TIMES[track], feedback: parameters.feedback, wet: 1 })
-    : new Tone.FeedbackDelay({ delayTime: DELAY_TIMES[track], feedback: parameters.feedback, wet: 1 });
+  const delay = new WarehouseDelay(DELAY_TIMES[track], channel.delayReturn.stereo, parameters.feedback);
   const delayHighpass = new Tone.Filter({ type: "highpass", frequency: channel.delayReturn.highpass, rolloff: -24 });
   const delayLowpass = new Tone.Filter({ type: "lowpass", frequency: channel.delayReturn.lowpass, rolloff: -12 });
   const reverbSend = new Tone.Gain(parameters.reverbWet);
-  const reverb = new Tone.Reverb({ ...REVERBS[track], wet: 1 });
+  const reverb = new WarehouseReverb(REVERBS[track].decay, REVERBS[track].preDelay);
   const reverbHighpass = new Tone.Filter({ type: "highpass", frequency: channel.reverbReturn.highpass, rolloff: -24 });
   const reverbLowpass = new Tone.Filter({ type: "lowpass", frequency: channel.reverbReturn.lowpass, rolloff: -12 });
   const sum = new Tone.Gain(1);
@@ -172,7 +238,7 @@ export function createTrackGraph(
     reverbSend, reverb, reverbHighpass, reverbLowpass, sum, duck, gain,
   ];
   if (widener) nodes.push(widener);
-  const graph = { baseVolume: volume, outputTrimGain: dbToGain(channel.outputTrimDb), input, highpass, eq, filter, saturator, compressor, dry, delaySend, delay, delayHighpass, delayLowpass, reverbSend, reverb, reverbHighpass, reverbLowpass, sum, widener, duck, gain, ready: reverb.ready, nodes };
+  const graph = { baseVolume: volume, outputTrimGain: dbToGain(channel.outputTrimDb), input, highpass, eq, filter, saturator, compressor, dry, delaySend, delay, delayHighpass, delayLowpass, reverbSend, reverb, reverbHighpass, reverbLowpass, sum, widener, duck, gain, ready: Promise.resolve(), nodes };
   applyTrackGraphParameters(graph, track, preset, macros, 0.001);
   return graph;
 }
@@ -206,7 +272,7 @@ export function applyTrackGraphParameters(
   graph.compressor.threshold.rampTo(parameters.threshold, duration, time);
   graph.compressor.ratio.rampTo(parameters.ratio, duration, time);
   graph.delaySend.gain.rampTo(parameters.delayWet, duration, time);
-  graph.delay.feedback.rampTo(parameters.feedback, duration, time);
+  graph.delay.setFeedback(parameters.feedback, duration, time);
   graph.delayHighpass.frequency.rampTo(channel.delayReturn.highpass, duration, time);
   graph.delayLowpass.frequency.rampTo(channel.delayReturn.lowpass, duration, time);
   graph.reverbSend.gain.rampTo(parameters.reverbWet, duration, time);
