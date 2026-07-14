@@ -29,6 +29,13 @@ npm run verify
 
 [![Kitty mit Step-Raster, Szenen, Klangfarben und Makros](docs/assets/kitty-interface.webp)](https://theanonymous.github.io/Kitty/)
 
+## Werkprofile
+
+| Hard | Acid | Hybrid |
+| --- | --- | --- |
+| ![Schwarze Groovebox mit massiven roten Drum-Impulsen](docs/assets/profiles/kitty-hard.webp) | ![Schwarze Groovebox mit rotem Sequencer und gelbgrüner Acid-Linie](docs/assets/profiles/kitty-acid.webp) | ![Ausgewogene schwarze Groovebox mit roten Steps und warmem Filterlicht](docs/assets/profiles/kitty-hybrid.webp) |
+| **155 BPM · F-Phrygisch**<br>Druckvolle Warehouse-Patterns | **145 BPM · A-Moll**<br>Dominante 303-Linien | **150 BPM · Fis-Moll**<br>Hard und Acid im Gleichgewicht |
+
 ## Bedienung
 
 - `Leertaste`: Start/Stop
