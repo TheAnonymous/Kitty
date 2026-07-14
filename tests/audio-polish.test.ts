@@ -16,6 +16,8 @@ import { safeEffectParameters } from "@/domain/sound-presets";
 import { SOUND_PRESETS, TRACK_KINDS, type Step, type TrackMacros } from "@/domain/types";
 import { createFactoryProject } from "@/domain/defaults";
 import { effectiveTrackGains } from "@/store/store";
+import { saturationGainCompensation, saturationSample } from "@/audio/graph";
+import { VOICE_LIMITS } from "@/audio/engine";
 
 describe("Sound-Polish-Verträge", () => {
   it("bildet gespeicherte Fader quadratisch und unverändert begrenzt ab", () => {
@@ -52,6 +54,10 @@ describe("Sound-Polish-Verträge", () => {
         expect(positionalVelocity(bar, step)).toBe(positionalVelocity(bar, step));
       }
     }
+  });
+
+  it("behält die vereinbarten Voice-Limits bei", () => {
+    expect(VOICE_LIMITS).toEqual({ drums: 6, acid: 1, stab: 4, rave: 5, texture: 2 });
   });
 
   it("formt Chord offen und lässt Beton und Flash als enge Dreiklänge", () => {
@@ -97,6 +103,24 @@ describe("Sound-Polish-Verträge", () => {
         expect(b.reverbWet).toBeGreaterThanOrEqual(a.reverbWet);
         expect(b.feedback).toBeGreaterThanOrEqual(a.feedback);
       }
+    }
+  });
+
+  it("verwendet drei DC-sichere, monotone Saturation-Kennlinien mit Pegelkompensation", () => {
+    for (const curve of ["body", "bite", "density"] as const) {
+      expect(saturationSample(curve, 0)).toBe(0);
+      let previous = saturationSample(curve, -1);
+      for (let index = 1; index <= 100; index += 1) {
+        const input = -1 + index / 50;
+        const value = saturationSample(curve, input);
+        expect(Number.isFinite(value)).toBe(true);
+        expect(value).toBeGreaterThanOrEqual(previous);
+        expect(value).toBeCloseTo(-saturationSample(curve, -input), 10);
+        previous = value;
+      }
+      expect(saturationGainCompensation(curve, 0)).toBe(1);
+      expect(saturationGainCompensation(curve, 1)).toBeLessThan(saturationGainCompensation(curve, 0.5));
+      expect(saturationGainCompensation(curve, Number.NaN)).toBe(1);
     }
   });
 });

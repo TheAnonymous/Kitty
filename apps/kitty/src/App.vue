@@ -71,6 +71,7 @@ const newName = ref("Neues Set");
 const newProfile = ref<GenreProfile>("hybrid");
 const renameValue = ref(active.value.name);
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
+let audioDisposed = false;
 
 const pattern = computed(() => selectedPattern(state.value)!);
 const step = computed(() => selectedStep(state.value));
@@ -207,16 +208,23 @@ function onShortcut(event: KeyboardEvent): void {
 
 function percent(value: number): string { return `${Math.max(0, Math.min(100, value * 100)).toFixed(2)}%`; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : "Unbekannter Fehler"; }
+function disposeAudio(): void {
+  if (audioDisposed) return;
+  audioDisposed = true;
+  engine.dispose();
+}
 
 onMounted(() => {
   window.addEventListener("keydown", onShortcut);
+  window.addEventListener("pagehide", disposeAudio);
   if (loaded.warning) toast.toast({ title: "Sicherung geladen", description: loaded.warning, status: "warning", duration: 8000 });
 });
 
 onBeforeUnmount(() => {
   clearTimeout(saveTimer);
-  unsubscribe(); offStatus(); offPlayhead(); offTriggered(); engine.dispose();
+  unsubscribe(); offStatus(); offPlayhead(); offTriggered(); disposeAudio();
   window.removeEventListener("keydown", onShortcut);
+  window.removeEventListener("pagehide", disposeAudio);
 });
 </script>
 

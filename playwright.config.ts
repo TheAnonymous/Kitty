@@ -19,5 +19,8 @@ export default defineConfig({
     port: e2ePort,
     reuseExistingServer: false,
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    { name: "chromium", testIgnore: /audio\.spec\.ts/, use: { ...devices["Desktop Chrome"] } },
+    { name: "audio", testMatch: /audio\.spec\.ts/, dependencies: ["chromium"], use: { ...devices["Desktop Chrome"] } },
+  ],
 });

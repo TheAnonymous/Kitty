@@ -48,7 +48,8 @@ describe("typisierte Preset-Rezepte", () => {
           expect(values.delayWet).toBeLessThanOrEqual(SOUND_SAFETY_LIMITS.wet);
           expect(values.reverbWet).toBeLessThanOrEqual(SOUND_SAFETY_LIMITS.wet);
           expect(values.saturation).toBeLessThanOrEqual(SOUND_SAFETY_LIMITS.saturation);
-          expect(Object.values(values).every((value) => value >= 0 || value === values.threshold)).toBe(true);
+          expect(Object.values(values).every(Number.isFinite)).toBe(true);
+          expect(Math.abs(values.eqTilt)).toBeLessThanOrEqual(presetDefinition(track, preset).channel.eq.tiltDb);
         }
       }
     }
@@ -96,6 +97,59 @@ describe("typisierte Preset-Rezepte", () => {
     if (riser.source !== "riser") throw new Error("Riser-Rezept fehlt");
     expect(riser.filterEnd).toBeGreaterThan(riser.filterStart);
     expect(riser.sweepSeconds).toBeGreaterThan(0);
+  });
+
+  it("hinterlegt pro Preset vollständige Channel-, Return- und Sättigungsrezepte", () => {
+    for (const track of TRACK_KINDS) {
+      for (const preset of SOUND_PRESETS[track]) {
+        const channel = presetDefinition(track, preset).channel;
+        expect(allNumbers(channel).every(Number.isFinite)).toBe(true);
+        expect(channel.highpass).toBeGreaterThanOrEqual(20);
+        expect(["warm", "sharp", "clean"]).toContain(channel.filterCharacter);
+        expect(channel.inputTrimDb).toBeGreaterThanOrEqual(-6);
+        expect(channel.outputTrimDb).toBeLessThanOrEqual(6);
+        expect(channel.delayReturn.highpass).toBeLessThan(channel.delayReturn.lowpass);
+        expect(typeof channel.delayReturn.stereo).toBe("boolean");
+        expect(channel.reverbReturn.highpass).toBeLessThan(channel.reverbReturn.lowpass);
+        expect(["body", "bite", "density"]).toContain(channel.saturationCurve);
+        expect(channel.compressor.attack).toBeGreaterThan(0);
+        expect(channel.compressor.release).toBeGreaterThan(channel.compressor.attack);
+      }
+    }
+  });
+
+  it("trennt die fünf Makroverträge ohne versteckte Send- oder Dichtekopplung", () => {
+    const center: TrackMacros = { color: 0.5, pressure: 0.5, space: 0.5, motion: 0.5, density: 0.5 };
+    for (const track of TRACK_KINDS) {
+      for (const preset of SOUND_PRESETS[track]) {
+        const base = safeEffectParameters(track, preset, center);
+        const color = safeEffectParameters(track, preset, { ...center, color: 1 });
+        expect(color.cutoff).not.toBe(base.cutoff);
+        expect(color.eqTilt).not.toBe(base.eqTilt);
+        expect(color.delayWet).toBe(base.delayWet);
+        expect(color.reverbWet).toBe(base.reverbWet);
+
+        const pressure = safeEffectParameters(track, preset, { ...center, pressure: 1 });
+        expect(pressure.saturation).toBeGreaterThanOrEqual(base.saturation);
+        expect(pressure.ratio).toBeGreaterThanOrEqual(base.ratio);
+        expect(pressure.delayWet).toBe(base.delayWet);
+        expect(pressure.reverbWet).toBe(base.reverbWet);
+        expect(pressure.q === base.q).toBe(track !== "acid");
+
+        const space = safeEffectParameters(track, preset, { ...center, space: 1 });
+        expect(space.delayWet).toBeGreaterThanOrEqual(base.delayWet);
+        expect(space.reverbWet).toBeGreaterThanOrEqual(base.reverbWet);
+        expect(space.feedback).toBe(base.feedback);
+
+        const motion = safeEffectParameters(track, preset, { ...center, motion: 1 });
+        expect(motion.feedback).toBeGreaterThanOrEqual(base.feedback);
+        expect(motion.delayWet).toBe(base.delayWet);
+        expect(motion.reverbWet).toBe(base.reverbWet);
+
+        const density = safeEffectParameters(track, preset, { ...center, density: 1 });
+        expect(density).toEqual(base);
+      }
+    }
   });
 });
 

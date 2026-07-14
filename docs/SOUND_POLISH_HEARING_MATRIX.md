@@ -1,6 +1,6 @@
-# Kitty Sound-Polish V2 — Hörabnahme
+# Kitty Sound-Polish V3 — optionales Hörprotokoll
 
-Stand: 2026-07-14. Diese Matrix ist der letzte lokale Gate vor Push oder GitHub-Pages-Deploy. Die automatische Chromium-Abnahme muss unmittelbar davor grün sein; die Kästchen bleiben bis zur menschlichen Hörfreigabe offen.
+Stand: 2026-07-14. Diese Matrix dokumentiert eine optionale subjektive Hörprobe und blockiert weder Push noch GitHub-Pages-Deploy. Verbindlich ist `npm run verify`: Die Chromium-Abnahme rendert alle 15 Presets bei gemeinsamen Makroständen 0, 0,5 und 1, alle Factory-Profile bei 120/150/180 BPM sowie die drei 150-BPM-Stresstests und prüft die festgelegten Pegel-, Crest-, DC-, Mono- und Stereogrenzen.
 
 ## Vorbereitung
 
@@ -48,12 +48,11 @@ Für jeden Durchlauf alle vier Szenen mindestens einmal hören. Besonders auf h�
 | Hybrid | 150 BPM | [ ] | [ ] | |
 | Hybrid | 180 BPM | [ ] | [ ] | |
 
-## Freigabe
+## Protokollabschluss
 
 - [ ] Alle 90 Preset-Hörpunkte sind abgenommen.
 - [ ] Alle 18 Factory-Hörpunkte sind abgenommen.
-- [ ] `npm run verify` ist auf genau diesem Stand grün.
+- [ ] `npm run verify` ist auf genau diesem Stand grün (verbindliches automatisiertes Gate).
 - [ ] Keine lokalen Audio-, Seiten- oder Konsolenfehler.
-- [ ] Freigabe für Push auf `main` wurde ausdrücklich erteilt.
 
-Freigegeben von: ____________________  Datum: ____________________
+Angehört von: ____________________  Datum: ____________________

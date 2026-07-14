@@ -16,60 +16,28 @@ import {
   rmsToDb,
   stabVoicing,
   stepDurationSeconds,
-  TRACK_CHANNEL_RECIPES,
 } from "./polish";
+import {
+  applyTrackGraphParameters,
+  CharacterSaturator,
+  createMasterGraph,
+  createTrackGraph,
+  setTrackGraphVolume,
+  type TrackGraph,
+} from "./graph";
 import { BarQueuedTransport, type SequencerPosition } from "./transport";
 
 export interface AudioStatusEvent { status: "idle" | "starting" | "playing" | "suspended" | "error"; message: string; }
 export interface PlayheadEvent extends SequencerPosition { peak: number; trackPeaks: Record<TrackKind, number>; triggeredTracks: TrackKind[]; ducking: boolean; acidLegato: boolean; }
 
-interface TrackStrip {
-  input: Tone.Gain;
-  highpass: Tone.Filter;
-  eq: Tone.EQ3;
-  filter: Tone.Filter;
-  saturator: SoftSaturator;
-  compressor: Tone.Compressor;
-  dry: Tone.Gain;
-  delaySend: Tone.Gain;
-  delay: Tone.FeedbackDelay | Tone.PingPongDelay;
-  reverbSend: Tone.Gain;
-  reverb: Tone.Reverb;
-  sum: Tone.Gain;
-  duck: Tone.Gain;
-  gain: Tone.Gain;
+interface TrackStrip extends TrackGraph {
   meter: PeakMeter;
-  nodes: Tone.ToneAudioNode[];
 }
 
 interface PeakMeter {
   node: AnalyserNode;
   getValue(): number;
   dispose(): void;
-}
-
-class SoftSaturator extends Tone.ToneAudioNode {
-  readonly name = "SoftSaturator";
-  readonly input = new Tone.Gain(1);
-  readonly output = new Tone.Gain(1);
-  private readonly shaper = new Tone.WaveShaper((value) => Math.tanh(value * 1.35) / Math.tanh(1.35), 4096);
-
-  constructor() {
-    super();
-    this.shaper.oversample = "2x";
-    this.input.chain(this.shaper, this.output);
-  }
-
-  setAmount(amount: number, duration: number, time?: number): void {
-    this.input.gain.rampTo(1 + amount * 3, duration, time);
-    this.output.gain.rampTo(1 / (1 + amount * 0.72), duration, time);
-  }
-
-  override dispose(): this {
-    super.dispose();
-    this.shaper.dispose();
-    return this;
-  }
 }
 
 interface VoiceBank {
@@ -168,7 +136,8 @@ export class ToneAudioEngine {
   onStatus(listener: (event: AudioStatusEvent) => void): () => void { this.statusListeners.add(listener); return () => this.statusListeners.delete(listener); }
 
   dispose(): void {
-    this.stop(false);
+    if (this.initialized || this.scheduleId !== null) this.stop(false);
+    else this.clock.reset();
     if (this.meterFrame !== null) cancelAnimationFrame(this.meterFrame);
     for (const bank of this.banks.values()) bank.dispose();
     this.banks.clear();
@@ -190,52 +159,21 @@ export class ToneAudioEngine {
   }
 
   private async createGraph(): Promise<void> {
-    const masterInput = new Tone.Gain(1);
-    const highpass = new Tone.Filter({ type: "highpass", frequency: 27, rolloff: -24 });
-    const eq = new Tone.EQ3({ low: -0.55, mid: 0.65, high: -0.35, lowFrequency: 120, highFrequency: 7_200 });
-    const compressor = new Tone.Compressor({ threshold: -15, ratio: 2, attack: 0.018, release: 0.19, knee: 8 });
-    const clipper = new SoftSaturator();
-    clipper.setAmount(0.085, 0.001);
-    const limiter = new Tone.Limiter(-1);
-    const masterFader = new Tone.Gain(faderGain(this.project.masterVolume));
     const meter = createPeakMeter();
-    masterInput.chain(highpass, eq, compressor, clipper, limiter, masterFader, meter.node, Tone.getDestination());
-    this.masterNodes = [masterInput, highpass, eq, compressor, clipper, limiter, masterFader];
-    this.masterFader = masterFader;
+    const master = createMasterGraph(Tone.getDestination(), this.project.masterVolume, meter.node);
+    this.masterNodes = master.nodes;
+    this.masterFader = master.fader;
     this.masterMeter = meter;
+    const gains = effectiveTrackGains(this.project);
     const strips = {} as Record<TrackKind, TrackStrip>;
     for (const track of TRACK_KINDS) {
-      const channel = TRACK_CHANNEL_RECIPES[track];
-      const input = new Tone.Gain(1);
-      const trackHighpass = new Tone.Filter({ type: "highpass", frequency: channel.highpass, rolloff: -24 });
-      const trackEq = new Tone.EQ3(channel.eq);
-      const filter = new Tone.Filter({ type: "lowpass", frequency: 7_000, rolloff: track === "acid" ? -24 : -12 });
-      const saturator = new SoftSaturator();
-      const trackCompressor = new Tone.Compressor({ threshold: -10, ratio: 1.6, attack: channel.compressor.attack, release: channel.compressor.release, knee: 6 });
-      const dry = new Tone.Gain(1);
-      const delaySend = new Tone.Gain(0);
-      const delay = track === "rave"
-        ? new Tone.PingPongDelay({ delayTime: channel.delayTime, feedback: 0.14, wet: 1 })
-        : new Tone.FeedbackDelay({ delayTime: channel.delayTime, feedback: 0.14, wet: 1 });
-      const reverbSend = new Tone.Gain(0);
-      const reverb = new Tone.Reverb({ ...channel.reverb, wet: 1 });
-      const sum = new Tone.Gain(1);
-      const duck = new Tone.Gain(1);
-      const gain = new Tone.Gain(0.7);
+      const macros = this.patternFor(this.clock.runningScene, track)?.macros ?? { color: 0.5, pressure: 0.5, space: 0.5, motion: 0.5, density: 0.5 };
       const trackMeter = createPeakMeter();
-      input.chain(trackHighpass, trackEq, filter, saturator, trackCompressor);
-      trackCompressor.connect(dry);
-      trackCompressor.connect(delaySend);
-      trackCompressor.connect(reverbSend);
-      dry.connect(sum);
-      delaySend.chain(delay, sum);
-      reverbSend.chain(reverb, sum);
-      sum.chain(duck, gain, trackMeter.node, masterInput);
-      const nodes: Tone.ToneAudioNode[] = [input, trackHighpass, trackEq, filter, saturator, trackCompressor, dry, delaySend, delay, reverbSend, reverb, sum, duck, gain];
-      strips[track] = { input, highpass: trackHighpass, eq: trackEq, filter, saturator, compressor: trackCompressor, dry, delaySend, delay, reverbSend, reverb, sum, duck, gain, meter: trackMeter, nodes };
+      const graph = createTrackGraph(track, this.project.soundPresets[track], macros, gains[track], master.input, trackMeter.node);
+      strips[track] = { ...graph, meter: trackMeter };
     }
     this.strips = strips;
-    await Promise.all(Object.values(strips).map((strip) => strip.reverb.ready));
+    await Promise.all(Object.values(strips).map((strip) => strip.ready));
     if (this.strips !== strips) throw new Error("Audio-Vorbereitung wurde abgebrochen");
     this.initialized = true;
     this.monitorMeters();
@@ -262,7 +200,7 @@ export class ToneAudioEngine {
     for (const track of TRACK_KINDS) {
       const strip = this.strips?.[track];
       if (!strip) continue;
-      strip.gain.gain.rampTo(gains[track], 0.03);
+      setTrackGraphVolume(strip, gains[track], 0.03);
       const macros = this.patternFor(this.clock.runningScene, track)?.macros;
       const preset = this.project.soundPresets[track];
       if (macros && (!playing || this.activePresets[track] === preset)) {
@@ -273,16 +211,8 @@ export class ToneAudioEngine {
   }
 
   private applyMacros(strip: TrackStrip, macros: TrackMacros, track: TrackKind, preset: SoundPresetId, accent = false, time?: number): void {
-    const parameters = safeEffectParameters(track, preset, macros, accent);
     const duration = time === undefined ? 0.08 : 0.025;
-    strip.filter.frequency.rampTo(parameters.cutoff, duration, time);
-    strip.filter.Q.rampTo(parameters.q, duration, time);
-    strip.saturator.setAmount(parameters.saturation, duration, time);
-    strip.compressor.threshold.rampTo(parameters.threshold, duration, time);
-    strip.compressor.ratio.rampTo(parameters.ratio, duration, time);
-      strip.delaySend.gain.rampTo(parameters.delayWet, duration, time);
-      strip.delay.feedback.rampTo(parameters.feedback, duration, time);
-      strip.reverbSend.gain.rampTo(parameters.reverbWet, duration, time);
+    applyTrackGraphParameters(strip, track, preset, macros, duration, time, accent);
   }
 
   private tick(time: number): void {
@@ -395,20 +325,21 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneA
   const definition = presetDefinition("drums", preset);
   const recipe = definition.synthesis;
   const output = new Tone.Gain(definition.level).connect(destination);
-  const snareFilter = new Tone.Filter({ type: "highpass", frequency: 125, rolloff: -12 });
-  const snarePan = new Tone.Panner(-0.08).connect(output);
+  const snareFilter = new Tone.Filter({ type: "highpass", frequency: recipe.snare.highpass, rolloff: -12 });
+  const panScale = preset === "steel" ? 2.15 : preset === "rumble" ? 0.42 : 1;
+  const snarePan = new Tone.Panner(-0.08 * panScale).connect(output);
   snareFilter.connect(snarePan);
-  const clapFilter = new Tone.Filter({ type: "highpass", frequency: 520, rolloff: -24 });
-  const clapPan = new Tone.Panner(0.17).connect(output);
+  const clapFilter = new Tone.Filter({ type: "highpass", frequency: recipe.clap.highpass, rolloff: -24 });
+  const clapPan = new Tone.Panner(0.17 * panScale).connect(output);
   clapFilter.connect(clapPan);
-  const closedHatFilter = new Tone.Filter({ type: "highpass", frequency: 4_600, rolloff: -24 });
-  const closedHatPan = new Tone.Panner(-0.23).connect(output);
+  const closedHatFilter = new Tone.Filter({ type: "highpass", frequency: recipe.hats.closedHighpass, rolloff: -24 });
+  const closedHatPan = new Tone.Panner(-0.23 * panScale).connect(output);
   closedHatFilter.connect(closedHatPan);
-  const openHatFilter = new Tone.Filter({ type: "highpass", frequency: 3_900, rolloff: -24 });
-  const openHatPan = new Tone.Panner(0.27).connect(output);
+  const openHatFilter = new Tone.Filter({ type: "highpass", frequency: recipe.hats.openHighpass, rolloff: -24 });
+  const openHatPan = new Tone.Panner(0.27 * panScale).connect(output);
   openHatFilter.connect(openHatPan);
-  const tomFilter = new Tone.Filter({ type: "lowpass", frequency: 1_900, rolloff: -12 });
-  const tomPan = new Tone.Panner(-0.12).connect(output);
+  const tomFilter = new Tone.Filter({ type: "lowpass", frequency: recipe.tom.lowpass, rolloff: -12 });
+  const tomPan = new Tone.Panner(-0.12 * panScale).connect(output);
   tomFilter.connect(tomPan);
   const kick = new Tone.MembraneSynth({
     pitchDecay: recipe.kick.pitchDecay,
@@ -456,7 +387,7 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneA
     ? new Tone.Filter({ type: "lowpass", frequency: recipe.kick.subTail.cutoff, rolloff: -24 })
     : null;
   const subSaturator = recipe.kick.subTail && subFilter
-    ? new SoftSaturator()
+    ? new CharacterSaturator("density")
     : null;
   if (subHighpass && subFilter && subSaturator) {
     subHighpass.chain(subFilter, subSaturator, output);
@@ -523,7 +454,7 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: Tone.ToneAu
   const recipe = definition.synthesis;
   const output = new Tone.Gain(definition.level).connect(destination);
   const ampEnvelope = new Tone.AmplitudeEnvelope(definition.envelope).connect(output);
-  const voiceDrive = new SoftSaturator();
+  const voiceDrive = new CharacterSaturator(definition.channel.saturationCurve);
   voiceDrive.connect(ampEnvelope);
   const filter = new Tone.Filter({ type: "lowpass", frequency: recipe.filterBase, Q: recipe.filterQ, rolloff: -24 }).connect(voiceDrive);
   const filterEnvelope = new Tone.FrequencyEnvelope({
@@ -538,16 +469,20 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: Tone.ToneAu
   const oscillator = new Tone.Oscillator({ frequency: 110, type: recipe.oscillator }).connect(filter).start();
   let active = false;
   return {
-    trigger: (notes, step, time, velocity, _macros, context) => {
+    trigger: (notes, step, time, velocity, macros, context) => {
       const note = notes[0];
       if (note === undefined) return;
       const accent = step.dynamics === "accent";
       const performance = acidStepParameters(preset, accent, context.legato);
+      const effects = safeEffectParameters("acid", preset, macros, accent);
       const frequency = Tone.Frequency(note, "midi").toFrequency();
       oscillator.frequency.cancelAndHoldAtTime(time);
       if (context.legato && active) oscillator.frequency.exponentialRampToValueAtTime(frequency, time + performance.portamento);
       else oscillator.frequency.setValueAtTime(frequency, time);
-      voiceDrive.setAmount(0.045 + performance.saturationBoost, 0.012, time);
+      voiceDrive.setCurve(definition.channel.saturationCurve, 0.012, time);
+      voiceDrive.setAmount(effects.saturation, 0.012, time);
+      filter.Q.rampTo(effects.q, 0.018, time);
+      filterEnvelope.baseFrequency = Math.max(recipe.filterBase * 0.7, Math.min(recipe.filterBase * 2.15, effects.cutoff * 0.12));
       filterEnvelope.octaves = recipe.filterOctaves * performance.filterBoost;
       filterEnvelope.decay = recipe.filterDecay * performance.decayMultiplier;
       if (!context.legato || !active) {
@@ -578,8 +513,19 @@ function createStabBank(preset: SoundPresetMap["stab"], destination: Tone.ToneAu
   const definition = presetDefinition("stab", preset);
   const recipe = definition.synthesis;
   const output = new Tone.Gain(definition.level).connect(destination);
+  const voiceFilter = new Tone.Filter({ type: "lowpass", frequency: definition.voiceFilter.base, Q: definition.voiceFilter.q, rolloff: -24 }).connect(output);
+  const filterEnvelope = new Tone.FrequencyEnvelope({
+    attack: definition.voiceFilter.attack,
+    decay: definition.voiceFilter.decay,
+    sustain: definition.voiceFilter.sustain,
+    release: definition.voiceFilter.release,
+    baseFrequency: definition.voiceFilter.base,
+    octaves: definition.voiceFilter.octaves,
+    exponent: 2.1,
+  }).connect(voiceFilter.frequency);
   const voiceCount = preset === "chord" ? 4 : 3;
-  const pans = Array.from({ length: voiceCount }, (_, index) => new Tone.Panner(voiceCount === 4 ? [-0.48, 0.26, -0.16, 0.5][index]! : [-0.36, 0, 0.36][index]!).connect(output));
+  const panPositions = preset === "chord" ? [-0.44, 0.18, -0.12, 0.46] : preset === "flash" ? [-0.32, 0, 0.32] : [-0.29, 0, 0.29];
+  const pans = Array.from({ length: voiceCount }, (_, index) => new Tone.Panner(panPositions[index]!).connect(voiceFilter));
   const voices: MelodicVoice[] = Array.from({ length: voiceCount }, (_, index) => {
     const voice = recipe.engine === "fm"
       ? new Tone.FMSynth({
@@ -598,14 +544,20 @@ function createStabBank(preset: SoundPresetMap["stab"], destination: Tone.ToneAu
     return voice;
   });
   return {
-    trigger: (notes, step, time, velocity, macros) => voices.forEach((voice, index) => {
-      const note = notes[index];
-      if (note === undefined) return;
-      if (recipe.engine === "analog") voice.detune.rampTo((index - (voiceCount - 1) / 2) * recipe.detune * (0.65 + clamp01(macros.motion) * 0.55), 0.035, time);
-      voice.triggerAttackRelease(Tone.Frequency(note, "midi").toFrequency(), duration(step), time, velocity);
-    }),
-    release: (time) => voices.forEach((voice) => voice.triggerRelease(time)),
-    dispose: () => { voices.forEach((voice) => voice.dispose()); pans.forEach((pan) => pan.dispose()); output.dispose(); },
+    trigger: (notes, step, time, velocity, macros, context) => {
+      filterEnvelope.baseFrequency = definition.voiceFilter.base * (0.72 + clamp01(macros.color) * 0.58);
+      filterEnvelope.octaves = definition.voiceFilter.octaves * (0.82 + clamp01(macros.color) * 0.26);
+      filterEnvelope.triggerAttack(time, velocity);
+      filterEnvelope.triggerRelease(time + stepDurationSeconds(step.length, context.tempo));
+      voices.forEach((voice, index) => {
+        const note = notes[index];
+        if (note === undefined) return;
+        if (recipe.engine === "analog") voice.detune.rampTo((index - (voiceCount - 1) / 2) * recipe.detune * (0.65 + clamp01(macros.motion) * 0.55), 0.035, time);
+        voice.triggerAttackRelease(Tone.Frequency(note, "midi").toFrequency(), duration(step), time, velocity);
+      });
+    },
+    release: (time) => { voices.forEach((voice) => voice.triggerRelease(time)); filterEnvelope.triggerRelease(time); },
+    dispose: () => { voices.forEach((voice) => voice.dispose()); pans.forEach((pan) => pan.dispose()); filterEnvelope.dispose(); voiceFilter.dispose(); output.dispose(); },
   };
 }
 
@@ -761,8 +713,11 @@ export interface OfflineAudioMetrics {
   dcOffset: number;
   peakDb: number;
   rmsDb: number;
+  activeRmsDb: number;
   crestDb: number;
+  tailEnergyDb: number;
   nearCeilingRatio: number;
+  stereoCorrelation: number;
   lowSideDb: number;
   highSideDb: number;
   sideDb: number;
@@ -770,60 +725,79 @@ export interface OfflineAudioMetrics {
 }
 
 export interface OfflineAudioAcceptanceSuite {
-  presets: Record<string, OfflineAudioMetrics>;
+  presets: Record<string, Record<"min" | "mid" | "max", OfflineAudioMetrics>>;
   factories: Record<string, OfflineAudioMetrics>;
+  stresses: Record<string, OfflineAudioMetrics>;
 }
 
 export async function renderAudioAcceptanceSuite(): Promise<OfflineAudioAcceptanceSuite> {
-  const presets: Record<string, OfflineAudioMetrics> = {};
+  const presets: Record<string, Record<"min" | "mid" | "max", OfflineAudioMetrics>> = {};
   for (const track of TRACK_KINDS) {
     for (const preset of SOUND_PRESETS[track]) {
       const name = `${track}:${preset}`;
       try {
-        presets[name] = await renderOfflinePreset(track, preset);
+        presets[name] = {
+          min: await renderOfflinePreset(track, preset, macrosAt(0)),
+          mid: await renderOfflinePreset(track, preset, macrosAt(0.5)),
+          max: await renderOfflinePreset(track, preset, macrosAt(1)),
+        };
       } catch (error) {
         throw new Error(`${name}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }
   const factories: Record<string, OfflineAudioMetrics> = {};
+  const stresses: Record<string, OfflineAudioMetrics> = {};
   for (const profile of ["hard", "acid", "hybrid"] as const) {
-    factories[profile] = await renderOfflineFactory(profile);
+    for (const tempo of [120, 150, 180] as const) factories[`${profile}:${tempo}`] = await renderOfflineFactory(profile, tempo, false);
+    stresses[profile] = await renderOfflineFactory(profile, 150, true);
   }
-  return { presets, factories };
+  return { presets, factories, stresses };
 }
 
-const OFFLINE_MACROS: TrackMacros = { color: 0.58, pressure: 0.62, space: 0.38, motion: 0.54, density: 0.72 };
+function macrosAt(value: number): TrackMacros {
+  return { color: value, pressure: value, space: value, motion: value, density: value };
+}
 
-async function renderOfflinePreset(track: TrackKind, preset: SoundPresetId): Promise<OfflineAudioMetrics> {
+export function renderAudioPresetAtLevel(track: TrackKind, preset: SoundPresetId, level = 0.5): Promise<OfflineAudioMetrics> {
+  return renderOfflinePreset(track, preset, macrosAt(clamp01(level)));
+}
+
+async function renderOfflinePreset(track: TrackKind, preset: SoundPresetId, macros: TrackMacros): Promise<OfflineAudioMetrics> {
   const tempo = 150;
   const buffer = await Tone.Offline(async () => {
     Tone.getTransport().bpm.value = tempo;
-    const master = createOfflineMaster(0.9);
-    const strip = createOfflineStrip(track, preset, OFFLINE_MACROS, 0.88, master);
-    await strip.reverb.ready;
+    const master = createMasterGraph(Tone.getDestination(), 0.9);
+    const strip = createTrackGraph(track, preset, macros, 0.88, master.input);
+    await strip.ready;
     const bank = createVoiceBank(track, preset, strip.input);
-    schedulePresetExample(bank, track, preset, tempo);
+    schedulePresetExample(bank, track, preset, tempo, macros);
   }, 2.7, 2, 44_100);
   return analyzeOfflineBuffer(buffer);
 }
 
-async function renderOfflineFactory(profile: "hard" | "acid" | "hybrid"): Promise<OfflineAudioMetrics> {
+async function renderOfflineFactory(profile: "hard" | "acid" | "hybrid", tempo: 120 | 150 | 180, stress: boolean): Promise<OfflineAudioMetrics> {
   const project = createFactoryProject(profile);
+  project.tempo = tempo;
+  if (stress) {
+    for (const scene of project.scenes) {
+      for (const pattern of scene.tracks) Object.assign(pattern.macros, { pressure: 1, space: 1, motion: 1 });
+    }
+  }
   const beat = 60 / project.tempo;
   const buffer = await Tone.Offline(async () => {
     Tone.getTransport().bpm.value = project.tempo;
-    const master = createOfflineMaster(project.masterVolume);
+    const master = createMasterGraph(Tone.getDestination(), project.masterVolume);
     const gains = effectiveTrackGains(project);
-    const strips = {} as Record<TrackKind, ReturnType<typeof createOfflineStrip>>;
+    const strips = {} as Record<TrackKind, TrackGraph>;
     const banks = {} as Record<TrackKind, VoiceBank>;
     for (const track of TRACK_KINDS) {
       const pattern = project.scenes[3]!.tracks.find((entry) => entry.instrument === track)!;
       const preset = project.soundPresets[track];
-      strips[track] = createOfflineStrip(track, preset, pattern.macros, gains[track], master);
+      strips[track] = createTrackGraph(track, preset, pattern.macros, gains[track], master.input);
       banks[track] = createVoiceBank(track, preset, strips[track].input);
     }
-    await Promise.all(TRACK_KINDS.map((track) => strips[track].reverb.ready));
+    await Promise.all(TRACK_KINDS.map((track) => strips[track].ready));
     const scene = project.scenes[3]!;
     for (let stepIndex = 0; stepIndex < 16; stepIndex += 1) {
       const time = 0.08 + stepIndex * beat / 4;
@@ -853,50 +827,6 @@ async function renderOfflineFactory(profile: "hard" | "acid" | "hybrid"): Promis
   return analyzeOfflineBuffer(buffer);
 }
 
-function createOfflineMaster(volume: number): Tone.Gain {
-  const input = new Tone.Gain(1);
-  const highpass = new Tone.Filter({ type: "highpass", frequency: 27, rolloff: -24 });
-  const eq = new Tone.EQ3({ low: -0.55, mid: 0.65, high: -0.35, lowFrequency: 120, highFrequency: 7_200 });
-  const compressor = new Tone.Compressor({ threshold: -15, ratio: 2, attack: 0.018, release: 0.19, knee: 8 });
-  const clipper = new SoftSaturator();
-  clipper.setAmount(0.085, 0.001);
-  const limiter = new Tone.Limiter(-1);
-  const fader = new Tone.Gain(faderGain(volume));
-  input.chain(highpass, eq, compressor, clipper, limiter, fader, Tone.getDestination());
-  return input;
-}
-
-function createOfflineStrip(track: TrackKind, preset: SoundPresetId, macros: TrackMacros, volume: number, master: Tone.ToneAudioNode) {
-  const channel = TRACK_CHANNEL_RECIPES[track];
-  const parameters = safeEffectParameters(track, preset, macros);
-  const input = new Tone.Gain(1);
-  const highpass = new Tone.Filter({ type: "highpass", frequency: channel.highpass, rolloff: -24 });
-  const eq = new Tone.EQ3(channel.eq);
-  const filter = new Tone.Filter({ type: "lowpass", frequency: parameters.cutoff, Q: parameters.q, rolloff: track === "acid" ? -24 : -12 });
-  const saturator = new SoftSaturator();
-  saturator.setAmount(parameters.saturation, 0.001);
-  const compressor = new Tone.Compressor({ threshold: parameters.threshold, ratio: parameters.ratio, attack: channel.compressor.attack, release: channel.compressor.release, knee: 6 });
-  const dry = new Tone.Gain(1);
-  const delaySend = new Tone.Gain(parameters.delayWet);
-  const delay = track === "rave"
-    ? new Tone.PingPongDelay({ delayTime: channel.delayTime, feedback: parameters.feedback, wet: 1 })
-    : new Tone.FeedbackDelay({ delayTime: channel.delayTime, feedback: parameters.feedback, wet: 1 });
-  const reverbSend = new Tone.Gain(parameters.reverbWet);
-  const reverb = new Tone.Reverb({ ...channel.reverb, wet: 1 });
-  const sum = new Tone.Gain(1);
-  const duck = new Tone.Gain(1);
-  const gain = new Tone.Gain(volume);
-  input.chain(highpass, eq, filter, saturator, compressor);
-  compressor.connect(dry);
-  compressor.connect(delaySend);
-  compressor.connect(reverbSend);
-  dry.connect(sum);
-  delaySend.chain(delay, sum);
-  reverbSend.chain(reverb, sum);
-  sum.chain(duck, gain, master);
-  return { input, duck, reverb };
-}
-
 function createVoiceBank(track: TrackKind, preset: SoundPresetId, destination: Tone.ToneAudioNode): VoiceBank {
   return track === "drums" ? createDrumBank(preset as SoundPresetMap["drums"], destination)
     : track === "acid" ? createAcidBank(preset as SoundPresetMap["acid"], destination)
@@ -905,14 +835,14 @@ function createVoiceBank(track: TrackKind, preset: SoundPresetId, destination: T
           : createTextureBank(preset as SoundPresetMap["texture"], destination);
 }
 
-function schedulePresetExample(bank: VoiceBank, track: TrackKind, preset: SoundPresetId, tempo: number): void {
+function schedulePresetExample(bank: VoiceBank, track: TrackKind, preset: SoundPresetId, tempo: number, macros: TrackMacros): void {
   const context = (step: number, legato = false, continuesLegato = false): TriggerContext => ({ tempo, scene: 0, bar: 0, step, legato, continuesLegato });
   const makeStep = (overrides: Partial<Step> = {}): Step => ({ enabled: true, drumVoices: [], degree: 0, octave: 2, dynamics: "normal", length: "normal", slide: false, ...overrides });
   if (track === "drums") {
     const hits: [number, DrumVoice[]][] = [[0.08, ["kick"]], [0.32, ["closedHat"]], [0.56, ["snare", "clap"]], [0.82, ["openHat"]], [1.08, ["tom"]], [1.36, ["kick", "closedHat"]]];
     hits.forEach(([time, drumVoices], index) => {
       try {
-        bank.trigger([], makeStep({ drumVoices, dynamics: index === 0 ? "accent" : "normal" }), time, 0.86, OFFLINE_MACROS, context(index));
+        bank.trigger([], makeStep({ drumVoices, dynamics: index === 0 ? "accent" : "normal" }), time, 0.86 * (0.78 + macros.density * 0.2), macros, context(index));
       } catch (error) {
         throw new Error(`Drum-Hit ${drumVoices.join("+")} @ ${time}: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -920,16 +850,16 @@ function schedulePresetExample(bank: VoiceBank, track: TrackKind, preset: SoundP
     return;
   }
   if (track === "acid") {
-    bank.trigger([40], makeStep({ dynamics: "accent" }), 0.08, 0.82, OFFLINE_MACROS, context(0, false, true));
-    bank.trigger([43], makeStep({ slide: true }), 0.08 + 15 / tempo, 0.76, OFFLINE_MACROS, context(1, true, true));
-    bank.trigger([47], makeStep({ slide: true, length: "long" }), 0.08 + 30 / tempo, 0.78, OFFLINE_MACROS, context(2, true, false));
+    bank.trigger([40], makeStep({ dynamics: "accent" }), 0.08, 0.82 * (0.78 + macros.density * 0.2), macros, context(0, false, true));
+    bank.trigger([43], makeStep({ slide: true }), 0.08 + 15 / tempo, 0.76 * (0.78 + macros.density * 0.2), macros, context(1, true, true));
+    bank.trigger([47], makeStep({ slide: true, length: "long" }), 0.08 + 30 / tempo, 0.78 * (0.78 + macros.density * 0.2), macros, context(2, true, false));
     return;
   }
   const note = track === "texture" ? 42 : 52;
   const firstStep = makeStep({ length: track === "texture" && preset === "riser" ? "normal" : "long" });
   const firstNotes = track === "stab" ? stabVoicing(preset as SoundPresetMap["stab"], [52, 55, 59]) : [note];
-  bank.trigger(firstNotes, firstStep, 0.08 + performanceOffsetSeconds(track), 0.84, OFFLINE_MACROS, context(0));
-  if (track !== "texture") bank.trigger(firstNotes.map((value) => value + 3), makeStep(), 0.72 + performanceOffsetSeconds(track), 0.72, OFFLINE_MACROS, context(4));
+  bank.trigger(firstNotes, firstStep, 0.08 + performanceOffsetSeconds(track), 0.84 * (0.78 + macros.density * 0.2), macros, context(0));
+  if (track !== "texture") bank.trigger(firstNotes.map((value) => value + 3), makeStep(), 0.72 + performanceOffsetSeconds(track), 0.72 * (0.78 + macros.density * 0.2), macros, context(4));
 }
 
 function applyOfflineDuck(gain: Tone.Gain, track: TrackKind, tempo: number, time: number): void {
@@ -962,7 +892,12 @@ function analyzeOfflineBuffer(buffer: Tone.ToneAudioBuffer): OfflineAudioMetrics
   let lowMidEnergy = 0;
   let highSideEnergy = 0;
   let highMidEnergy = 0;
+  let leftEnergy = 0;
+  let rightEnergy = 0;
+  let crossEnergy = 0;
+  let tailEnergy = 0;
   const nearCeilingGain = Math.pow(10, -1.15 / 20);
+  const tailStart = Math.floor(left.length * 0.75);
   for (let index = 0; index < left.length; index += 1) {
     const l = left[index]!;
     const r = right[index]!;
@@ -971,6 +906,10 @@ function analyzeOfflineBuffer(buffer: Tone.ToneAudioBuffer): OfflineAudioMetrics
     peak = Math.max(peak, absolute);
     if (absolute >= nearCeilingGain) nearCeiling += 1;
     sum += l * l + r * r;
+    leftEnergy += l * l;
+    rightEnergy += r * r;
+    crossEnergy += l * r;
+    if (index >= tailStart) tailEnergy += (l * l + r * r) * 0.5;
     dcLeft += l;
     dcRight += r;
     const mid = (l + r) * 0.5;
@@ -1002,13 +941,31 @@ function analyzeOfflineBuffer(buffer: Tone.ToneAudioBuffer): OfflineAudioMetrics
     dcOffset: Math.max(Math.abs(dcLeft / frames), Math.abs(dcRight / frames)),
     peakDb,
     rmsDb,
+    activeRmsDb: analyzeActiveRms(left, right, buffer.sampleRate),
     crestDb: peakDb - rmsDb,
+    tailEnergyDb: energyDb(tailEnergy, frames - tailStart),
     nearCeilingRatio: nearCeiling / frames,
+    stereoCorrelation: crossEnergy / Math.sqrt(Math.max(1e-12, leftEnergy * rightEnergy)),
     lowSideDb: energyRatioDb(lowSideEnergy, lowMidEnergy),
     highSideDb: energyRatioDb(highSideEnergy, highMidEnergy),
     sideDb: energyRatioDb(sideEnergy, midTotalEnergy),
     bandDb: { low: energyDb(lowEnergy, frames), mid: energyDb(midEnergy, frames), high: energyDb(highEnergy, frames) },
   };
+}
+
+function analyzeActiveRms(left: Float32Array, right: Float32Array, sampleRate: number): number {
+  const blockSize = Math.max(1, Math.round(sampleRate * 0.05));
+  const blockEnergies: number[] = [];
+  for (let start = 0; start < left.length; start += blockSize) {
+    const end = Math.min(left.length, start + blockSize);
+    let energy = 0;
+    for (let index = start; index < end; index += 1) energy += (left[index]! ** 2 + right[index]! ** 2) * 0.5;
+    blockEnergies.push(energy / Math.max(1, end - start));
+  }
+  const peakBlock = Math.max(1e-12, ...blockEnergies);
+  const active = blockEnergies.filter((energy) => energy >= peakBlock * 0.01);
+  const mean = active.reduce((sum, energy) => sum + energy, 0) / Math.max(1, active.length);
+  return rmsToDb(Math.sqrt(mean));
 }
 
 function onePoleLowpass(input: Float32Array, cutoff: number, sampleRate: number): Float32Array {

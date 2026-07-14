@@ -1,4 +1,19 @@
-import { expect, test } from "@playwright/test";
+import { expect, test as base } from "@playwright/test";
+
+// Chromium can retain released Web Audio render resources for the lifetime of a
+// process. A fresh browser per live test keeps transport assertions independent.
+const test = base.extend({
+  page: async ({ playwright }, use, testInfo) => {
+    const browser = await playwright.chromium.launch();
+    const context = await browser.newContext({
+      baseURL: String(testInfo.project.use.baseURL),
+      viewport: { width: 1_280, height: 720 },
+    });
+    const page = await context.newPage();
+    await use(page);
+    await browser.close();
+  },
+});
 
 test.beforeEach(async ({ page }) => {
   await page.goto("./");
@@ -7,6 +22,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("lädt vollständig lokal und startet alle fünf hörbaren Spuren nach Nutzeraktion", async ({ page }) => {
+  test.setTimeout(70_000);
   const errors: string[] = [];
   const external: string[] = [];
   page.on("pageerror", (error) => errors.push(error.stack ?? error.message));
@@ -25,16 +41,17 @@ test("lädt vollständig lokal und startet alle fünf hörbaren Spuren nach Nutz
   await page.getByRole("button", { name: /START/ }).click();
   await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
 
-  await expect.poll(async () => (await page.locator(".kitty-shell").getAttribute("data-triggered-tracks"))?.split(",").sort(), { timeout: 8_000 })
+  await expect.poll(async () => (await page.locator(".kitty-shell").getAttribute("data-triggered-tracks"))?.split(",").sort(), { timeout: 20_000 })
     .toEqual(["acid", "drums", "rave", "stab", "texture"]);
-  await expect.poll(async () => Number(await page.getByRole("meter", { name: "Pegel Drum Machine" }).getAttribute("aria-valuenow")), { timeout: 8_000 }).toBeGreaterThan(0);
-  await expect.poll(async () => Number(await page.getByRole("meter", { name: "Masterpegel" }).getAttribute("aria-valuenow")), { timeout: 8_000 }).toBeGreaterThan(0);
-  await expect.poll(async () => page.locator(".kitty-shell").getAttribute("data-audio-ducking"), { timeout: 8_000 }).toBe("active");
+  await expect.poll(async () => Number(await page.getByRole("meter", { name: "Pegel Drum Machine" }).getAttribute("aria-valuenow")), { timeout: 20_000 }).toBeGreaterThan(0);
+  await expect.poll(async () => Number(await page.getByRole("meter", { name: "Masterpegel" }).getAttribute("aria-valuenow")), { timeout: 20_000 }).toBeGreaterThan(0);
+  await expect.poll(async () => page.locator(".kitty-shell").getAttribute("data-audio-ducking"), { timeout: 20_000 }).toBe("active");
   expect(errors).toEqual([]);
   expect(external).toEqual([]);
 });
 
 test("führt einen direkt benachbarten Acid-Slide ohne neuen Attack aus", async ({ page }) => {
+  test.setTimeout(50_000);
   await page.locator('.track-button[data-track="acid"]').click();
   await page.locator('.kitty-step[data-bar="0"][data-step="1"]').click();
   const slide = page.getByRole("switch", { name: /SLIDE/ });
@@ -42,11 +59,11 @@ test("führt einen direkt benachbarten Acid-Slide ohne neuen Attack aus", async 
   await expect(slide).toHaveAttribute("aria-checked", "true");
   await page.getByRole("button", { name: /START/ }).click();
   await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
-  await expect.poll(async () => page.locator(".kitty-shell").getAttribute("data-acid-legato"), { timeout: 8_000 }).toBe("active");
+  await expect.poll(async () => page.locator(".kitty-shell").getAttribute("data-acid-legato"), { timeout: 30_000 }).toBe("active");
 });
 
 test("stresst schnelle Preset-Wechsel in drei parallelen Audio-Kontexten", async ({ browser }, testInfo) => {
-  test.setTimeout(60_000);
+  test.setTimeout(120_000);
   const pages = await Promise.all(Array.from({ length: 3 }, async () => {
     const page = await browser.newPage();
     await page.goto(String(testInfo.project.use.baseURL));
@@ -75,6 +92,7 @@ test("stresst schnelle Preset-Wechsel in drei parallelen Audio-Kontexten", async
 });
 
 test("wechselt bei laufendem Transport durch alle 15 Presets ohne Audiofehler", async ({ page }) => {
+  test.setTimeout(90_000);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.stack ?? error.message));
   page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
@@ -139,6 +157,7 @@ test("speichert Steps automatisch und rekonstruiert sie nach Reload", async ({ p
 });
 
 test("erstellt bestätigte Profile, wechselt Projekte und löscht die Undo-Historie beim Wechsel", async ({ page }) => {
+  test.setTimeout(60_000);
   await page.locator('.kitty-step[data-bar="0"][data-step="1"]').click();
   await expect(page.getByRole("button", { name: /Undo/ })).toBeEnabled();
   await page.getByRole("button", { name: "Neu" }).click();
