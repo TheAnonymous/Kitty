@@ -5,6 +5,7 @@ import type {
   ProjectV1,
   Scene,
   SceneRole,
+  SoundPresetMap,
   TrackKind,
   TrackMacros,
   TransportState,
@@ -15,6 +16,12 @@ export const PROFILE_DEFINITIONS: Record<GenreProfile, { label: string; descript
   hard: { label: "Hard", description: "155 BPM · F-Phrygisch · druckvolle Warehouse-Patterns", tempo: 155, root: "F", scale: "phrygian" },
   acid: { label: "Acid", description: "145 BPM · A-Moll · dominante 303-Linien", tempo: 145, root: "A", scale: "minor" },
   hybrid: { label: "Hybrid", description: "150 BPM · Fis-Moll · Hard und Acid im Gleichgewicht", tempo: 150, root: "F#", scale: "minor" },
+};
+
+export const PROFILE_SOUND_PRESETS: Record<GenreProfile, SoundPresetMap> = {
+  hard: { drums: "rumble", acid: "venom", stab: "concrete", rave: "hoover", texture: "noise" },
+  acid: { drums: "steel", acid: "silverbox", stab: "chord", rave: "pulse", texture: "noise" },
+  hybrid: { drums: "warehouse", acid: "silverbox", stab: "concrete", rave: "hoover", texture: "noise" },
 };
 
 const SCENES: readonly { role: SceneRole; name: string; seed: number }[] = [
@@ -56,7 +63,7 @@ export function createFactoryProject(profile: GenreProfile = "hybrid"): ProjectV
     scale: definition.scale,
     swing: profile === "hard" ? 0.04 : 0.08,
     masterVolume: 0.76,
-    soundPresets: { drums: "warehouse", acid: "silverbox", stab: "concrete", rave: "hoover", texture: "noise" },
+    soundPresets: { ...PROFILE_SOUND_PRESETS[profile] },
     mix: TRACK_KINDS.map((instrument) => ({
       instrument,
       muted: false,

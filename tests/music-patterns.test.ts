@@ -18,9 +18,9 @@ describe("skalensichere Musik", () => {
   });
 
   it("erzeugt die drei bestätigten Werkprofile ohne versteckte Profilkopplung", () => {
-    expect(createFactoryProject("hard")).toMatchObject({ profile: "hard", tempo: 155, root: "F", scale: "phrygian" });
-    expect(createFactoryProject("acid")).toMatchObject({ profile: "acid", tempo: 145, root: "A", scale: "minor" });
-    expect(createFactoryProject()).toMatchObject({ profile: "hybrid", tempo: 150, root: "F#", scale: "minor" });
+    expect(createFactoryProject("hard")).toMatchObject({ profile: "hard", tempo: 155, root: "F", scale: "phrygian", soundPresets: { drums: "rumble", acid: "venom", stab: "concrete", rave: "hoover", texture: "noise" } });
+    expect(createFactoryProject("acid")).toMatchObject({ profile: "acid", tempo: 145, root: "A", scale: "minor", soundPresets: { drums: "steel", acid: "silverbox", stab: "chord", rave: "pulse", texture: "noise" } });
+    expect(createFactoryProject()).toMatchObject({ profile: "hybrid", tempo: 150, root: "F#", scale: "minor", soundPresets: { drums: "warehouse", acid: "silverbox", stab: "concrete", rave: "hoover", texture: "noise" } });
   });
 });
 

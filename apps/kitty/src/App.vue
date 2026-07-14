@@ -199,7 +199,7 @@ function onShortcut(event: KeyboardEvent): void {
   if (key === "r") { event.preventDefault(); dispatch({ type: "track/typical" }); }
 }
 
-function percent(value: number): string { return `${Math.round(value * 100)} %`; }
+function percent(value: number): string { return `${Math.max(0, Math.min(100, value * 100)).toFixed(2)}%`; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : "Unbekannter Fehler"; }
 
 onMounted(() => {

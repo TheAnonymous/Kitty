@@ -32,6 +32,44 @@ test("lädt vollständig lokal und startet alle fünf hörbaren Spuren nach Nutz
   expect(external).toEqual([]);
 });
 
+test("wechselt bei laufendem Transport durch alle 15 Presets ohne Audiofehler", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+  page.on("requestfailed", (request) => errors.push(`Request fehlgeschlagen: ${request.url()}`));
+
+  await page.getByRole("button", { name: /START/ }).click();
+  await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
+  const tracks = [
+    { id: "drums", name: "Drum Machine", presets: ["Warehouse", "Stahl", "Rumble"] },
+    { id: "acid", name: "Acid Bass", presets: ["Silverbox", "Venom", "Rubber"] },
+    { id: "stab", name: "Stab", presets: ["Beton", "Chord", "Flash"] },
+    { id: "rave", name: "Rave Lead", presets: ["Hoover", "Pulse", "Siren"] },
+    { id: "texture", name: "Texture / FX", presets: ["Noise", "Drone", "Riser"] },
+  ] as const;
+
+  for (const track of tracks) {
+    await page.locator(`.track-button[data-track="${track.id}"]`).click();
+    for (const label of track.presets) {
+      const button = page.locator(".preset-button").filter({ has: page.locator("strong").filter({ hasText: label }) });
+      await button.click();
+      await expect(button).toHaveAttribute("aria-pressed", "true");
+      await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible();
+    }
+    await expect.poll(
+      async () => Number.parseFloat(await page.getByRole("meter", { name: `Pegel ${track.name}` }).locator("i").evaluate((element) => element.style.height)),
+      { timeout: 8_000, message: `${track.name} lieferte keinen echten Spurpegel` },
+    ).toBeGreaterThan(0);
+  }
+
+  await expect.poll(async () => (await page.locator(".kitty-shell").getAttribute("data-triggered-tracks"))?.split(",").sort(), { timeout: 8_000 })
+    .toEqual(["acid", "drums", "rave", "stab", "texture"]);
+  const firstPlayhead = await page.locator(".kitty-step.is-playing").getAttribute("data-step");
+  await expect.poll(async () => page.locator(".kitty-step.is-playing").getAttribute("data-step")).not.toBe(firstPlayhead);
+  await expect(page.getByRole("alert", { name: /Audio braucht deine Hilfe/ })).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test("merkt Szenen an der nächsten Taktgrenze vor", async ({ page }) => {
   await page.getByRole("button", { name: /START/ }).click();
   await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });

@@ -1,7 +1,7 @@
 import * as Tone from "tone";
 import { scaleChord, scaleDegreeMidi } from "../domain/music";
-import { presetDefinition, safeEffectParameters } from "../domain/sound-presets";
-import type { DrumVoice, ProjectV1, SoundPresetId, Step, TrackKind, TrackMacros } from "../domain/types";
+import { acidStepParameters, presetDefinition, safeEffectParameters } from "../domain/sound-presets";
+import type { DrumVoice, ProjectV1, SoundPresetId, SoundPresetMap, Step, TrackKind, TrackMacros } from "../domain/types";
 import { TRACK_KINDS } from "../domain/types";
 import { effectiveTrackGains } from "../store/store";
 import { BarQueuedTransport, type SequencerPosition } from "./transport";
@@ -11,15 +11,46 @@ export interface PlayheadEvent extends SequencerPosition { peak: number; trackPe
 
 interface TrackStrip {
   filter: Tone.Filter;
+  saturator: SoftSaturator;
   compressor: Tone.Compressor;
   delay: Tone.FeedbackDelay;
   reverb: Tone.Reverb;
   gain: Tone.Gain;
-  meter: Tone.Meter;
+  meter: PeakMeter;
+}
+
+interface PeakMeter {
+  node: AnalyserNode;
+  getValue(): number;
+  dispose(): void;
+}
+
+class SoftSaturator extends Tone.ToneAudioNode {
+  readonly name = "SoftSaturator";
+  readonly input = new Tone.Gain(1);
+  readonly output = new Tone.Gain(1);
+  private readonly shaper = new Tone.WaveShaper((value) => Math.tanh(value * 1.35) / Math.tanh(1.35), 4096);
+
+  constructor() {
+    super();
+    this.shaper.oversample = "2x";
+    this.input.chain(this.shaper, this.output);
+  }
+
+  setAmount(amount: number, duration: number, time?: number): void {
+    this.input.gain.rampTo(1 + amount * 3, duration, time);
+    this.output.gain.rampTo(1 / (1 + amount * 0.72), duration, time);
+  }
+
+  override dispose(): this {
+    super.dispose();
+    this.shaper.dispose();
+    return this;
+  }
 }
 
 interface VoiceBank {
-  trigger(notes: number[], step: Step, time: number, velocity: number): void;
+  trigger(notes: number[], step: Step, time: number, velocity: number, macros: TrackMacros): void;
   release(time?: number): void;
   dispose(): void;
 }
@@ -32,8 +63,9 @@ export class ToneAudioEngine {
   private graphReady: Promise<void> | null = null;
   private strips: Record<TrackKind, TrackStrip> | null = null;
   private masterNodes: Tone.ToneAudioNode[] = [];
-  private masterMeter: Tone.Meter | null = null;
+  private masterMeter: PeakMeter | null = null;
   private readonly banks = new Map<string, VoiceBank>();
+  private activePresets: Partial<Record<TrackKind, SoundPresetId>> = {};
   private scheduleId: number | null = null;
   private meterFrame: number | null = null;
   private peak = 0;
@@ -106,9 +138,11 @@ export class ToneAudioEngine {
     this.banks.clear();
     Object.values(this.strips ?? {}).forEach((strip) => Object.values(strip).forEach((node) => node.dispose()));
     this.masterNodes.forEach((node) => node.dispose());
+    this.masterMeter?.dispose();
     this.strips = null;
     this.masterNodes = [];
     this.masterMeter = null;
+    this.activePresets = {};
     this.initialized = false;
   }
 
@@ -116,20 +150,21 @@ export class ToneAudioEngine {
     const highpass = new Tone.Filter({ type: "highpass", frequency: 28, rolloff: -24 });
     const compressor = new Tone.Compressor({ threshold: -18, ratio: 3, attack: 0.012, release: 0.22 });
     const limiter = new Tone.Limiter(-1.2);
-    const meter = new Tone.Meter({ normalRange: true, smoothing: 0.82 });
-    highpass.chain(compressor, limiter, meter, Tone.getDestination());
-    this.masterNodes = [highpass, compressor, limiter, meter];
+    const meter = createPeakMeter();
+    highpass.chain(compressor, limiter, meter.node, Tone.getDestination());
+    this.masterNodes = [highpass, compressor, limiter];
     this.masterMeter = meter;
     const strips = {} as Record<TrackKind, TrackStrip>;
     for (const track of TRACK_KINDS) {
       const filter = new Tone.Filter({ type: "lowpass", frequency: 7_000, rolloff: track === "acid" ? -24 : -12 });
+      const saturator = new SoftSaturator();
       const trackCompressor = new Tone.Compressor({ threshold: -10, ratio: 1.6, attack: 0.004, release: 0.12 });
       const delay = new Tone.FeedbackDelay({ delayTime: "8n", feedback: 0.14, wet: 0.08 });
       const reverb = new Tone.Reverb({ decay: track === "texture" ? 3.2 : 1.5, preDelay: 0.02, wet: 0.1 });
       const gain = new Tone.Gain(0.7);
-      const trackMeter = new Tone.Meter({ normalRange: true, smoothing: 0.8 });
-      filter.chain(trackCompressor, delay, reverb, gain, trackMeter, highpass);
-      strips[track] = { filter, compressor: trackCompressor, delay, reverb, gain, meter: trackMeter };
+      const trackMeter = createPeakMeter();
+      filter.chain(saturator, trackCompressor, delay, reverb, gain, trackMeter.node, highpass);
+      strips[track] = { filter, saturator, compressor: trackCompressor, delay, reverb, gain, meter: trackMeter };
     }
     this.strips = strips;
     await Promise.all(Object.values(strips).map((strip) => strip.reverb.ready));
@@ -146,24 +181,31 @@ export class ToneAudioEngine {
     transport.swingSubdivision = "16n";
     Tone.getDestination().volume.rampTo(gainToDb(this.project.masterVolume), 0.04);
     const gains = effectiveTrackGains(this.project);
+    const playing = this.scheduleId !== null;
     for (const track of TRACK_KINDS) {
       const strip = this.strips?.[track];
       if (!strip) continue;
       strip.gain.gain.rampTo(gains[track], 0.03);
       const macros = this.patternFor(this.clock.runningScene, track)?.macros;
-      if (macros) this.applyMacros(strip, macros, track);
+      const preset = this.project.soundPresets[track];
+      if (macros && (!playing || this.activePresets[track] === preset)) {
+        this.activePresets[track] = preset;
+        this.applyMacros(strip, macros, track, preset);
+      }
     }
   }
 
-  private applyMacros(strip: TrackStrip, macros: TrackMacros, track: TrackKind): void {
-    const parameters = safeEffectParameters(track, this.project.soundPresets[track], macros);
-    strip.filter.frequency.rampTo(parameters.cutoff, 0.08);
-    strip.filter.Q.rampTo(parameters.q, 0.08);
-    strip.compressor.threshold.rampTo(parameters.threshold, 0.08);
-    strip.compressor.ratio.rampTo(parameters.ratio, 0.08);
-    strip.delay.wet.rampTo(parameters.delayWet, 0.08);
-    strip.delay.feedback.rampTo(parameters.feedback, 0.08);
-    strip.reverb.wet.rampTo(parameters.reverbWet, 0.08);
+  private applyMacros(strip: TrackStrip, macros: TrackMacros, track: TrackKind, preset: SoundPresetId, accent = false, time?: number): void {
+    const parameters = safeEffectParameters(track, preset, macros, accent);
+    const duration = time === undefined ? 0.08 : 0.025;
+    strip.filter.frequency.rampTo(parameters.cutoff, duration, time);
+    strip.filter.Q.rampTo(parameters.q, duration, time);
+    strip.saturator.setAmount(parameters.saturation, duration, time);
+    strip.compressor.threshold.rampTo(parameters.threshold, duration, time);
+    strip.compressor.ratio.rampTo(parameters.ratio, duration, time);
+    strip.delay.wet.rampTo(parameters.delayWet, duration, time);
+    strip.delay.feedback.rampTo(parameters.feedback, duration, time);
+    strip.reverb.wet.rampTo(parameters.reverbWet, duration, time);
   }
 
   private tick(time: number): void {
@@ -185,18 +227,23 @@ export class ToneAudioEngine {
     const pattern = this.patternFor(position.scene, track);
     const step = pattern?.bars[position.bar]?.steps[position.step];
     if (!pattern || !step?.enabled || effectiveTrackGains(this.project)[track] <= 0) return false;
-    const velocity = dynamicsVelocity(step) * (0.78 + pattern.macros.density * 0.2);
+    const preset = this.project.soundPresets[track];
+    const strip = this.strips?.[track];
+    if (!strip) return false;
+    this.activePresets[track] = preset;
+    this.applyMacros(strip, pattern.macros, track, preset, track === "acid" && step.dynamics === "accent", time);
+    const velocity = clamp01(dynamicsVelocity(step) * (0.78 + pattern.macros.density * 0.2));
     const bank = this.bankFor(track);
     if (track === "drums") {
-      bank.trigger([], step, time, velocity);
+      bank.trigger([], step, time, velocity, pattern.macros);
       return true;
     }
     const note = scaleDegreeMidi(this.project.root, this.project.scale, step.degree, step.octave);
     if (track === "stab") {
-      bank.trigger(scaleChord(this.project.root, this.project.scale, step.degree, step.octave).slice(0, 3), step, time, velocity);
+      bank.trigger(scaleChord(this.project.root, this.project.scale, step.degree, step.octave).slice(0, 3), step, time, velocity, pattern.macros);
       return true;
     }
-    bank.trigger([note], step, time, velocity);
+    bank.trigger([note], step, time, velocity, pattern.macros);
     return true;
   }
 
@@ -207,9 +254,11 @@ export class ToneAudioEngine {
     if (existing) return existing;
     const destination = this.strips?.[track].filter;
     if (!destination) throw new Error("Audio-Signalweg ist nicht initialisiert");
-    const bank = track === "drums" ? createDrumBank(preset, destination)
-      : track === "texture" ? createTextureBank(preset, destination)
-        : createMelodicBank(track, preset, destination);
+    const bank = track === "drums" ? createDrumBank(preset as SoundPresetMap["drums"], destination)
+      : track === "acid" ? createAcidBank(preset as SoundPresetMap["acid"], destination)
+        : track === "stab" ? createStabBank(preset as SoundPresetMap["stab"], destination)
+          : track === "rave" ? createRaveBank(preset as SoundPresetMap["rave"], destination)
+            : createTextureBank(preset as SoundPresetMap["texture"], destination);
     this.banks.set(key, bank);
     return bank;
   }
@@ -219,11 +268,11 @@ export class ToneAudioEngine {
 
   private monitorMeters(): void {
     if (!this.initialized) return;
-    const master = this.masterMeter?.getValue();
-    this.peak = clamp01(Math.max(typeof master === "number" ? master : 0, this.peak * 0.86));
+    const master = this.masterMeter?.getValue() ?? 0;
+    this.peak = clamp01(Math.max(master, this.peak * 0.93));
     for (const track of TRACK_KINDS) {
-      const value = this.strips?.[track].meter.getValue();
-      this.trackPeaks[track] = clamp01(Math.max(typeof value === "number" ? value : 0, this.trackPeaks[track] * 0.84));
+      const value = this.strips?.[track].meter.getValue() ?? 0;
+      this.trackPeaks[track] = clamp01(Math.max(value, this.trackPeaks[track] * 0.92));
     }
     this.meterFrame = requestAnimationFrame(() => this.monitorMeters());
   }
@@ -231,76 +280,212 @@ export class ToneAudioEngine {
   private emitStatus(status: AudioStatusEvent["status"], message: string): void { for (const listener of this.statusListeners) listener({ status, message }); }
 }
 
-function createDrumBank(preset: SoundPresetId, destination: Tone.ToneAudioNode): VoiceBank {
+function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneAudioNode): VoiceBank {
   const definition = presetDefinition("drums", preset);
+  const recipe = definition.synthesis;
   const output = new Tone.Gain(definition.level).connect(destination);
   const kick = new Tone.MembraneSynth({
-    pitchDecay: 0.045, octaves: definition.brightness > 0.7 ? 7 : 5.5,
-    oscillator: { type: definition.oscillator === "triangle" ? "triangle" : "sine" },
-    envelope: { attack: 0.001, decay: definition.decay, sustain: 0.01, release: definition.release },
+    pitchDecay: recipe.kick.pitchDecay,
+    octaves: recipe.kick.octaves,
+    oscillator: { type: recipe.kick.oscillator },
+    envelope: { ...definition.envelope, sustain: 0.01 },
   }).connect(output);
-  const body = new Tone.MembraneSynth({ pitchDecay: 0.025, octaves: 2.8, oscillator: { type: "triangle" }, envelope: { attack: 0.001, decay: 0.22, sustain: 0, release: 0.1 } }).connect(output);
-  const noise = new Tone.NoiseSynth({ noise: { type: definition.brightness > 0.65 ? "white" : "pink" }, envelope: { attack: 0.001, decay: 0.14, sustain: 0, release: 0.08 } }).connect(output);
-  const hat = new Tone.MetalSynth({ harmonicity: 5.1, modulationIndex: 26, resonance: 3_400, octaves: 1.4, envelope: { attack: 0.001, decay: 0.08, release: 0.04 } }).connect(output);
-  hat.frequency.value = 230;
-  const nodes: Tone.ToneAudioNode[] = [kick, body, noise, hat, output];
+  const snareBody = new Tone.MembraneSynth({
+    pitchDecay: 0.022,
+    octaves: 2.6,
+    oscillator: { type: "triangle" },
+    envelope: { attack: 0.001, decay: recipe.snare.bodyDecay, sustain: 0, release: 0.09 },
+  }).connect(output);
+  const tom = new Tone.MembraneSynth({
+    pitchDecay: 0.032,
+    octaves: 2.4,
+    oscillator: { type: "triangle" },
+    envelope: { attack: 0.001, decay: recipe.tom.decay, sustain: 0, release: 0.13 },
+  }).connect(output);
+  const snareNoise = new Tone.NoiseSynth({ noise: { type: recipe.snare.noise }, envelope: { attack: 0.001, decay: recipe.snare.decay, sustain: 0, release: 0.07 } }).connect(output);
+  const clapNoise = new Tone.NoiseSynth({ noise: { type: "white" }, envelope: { attack: 0.001, decay: recipe.clap.decay, sustain: 0, release: 0.04 } }).connect(output);
+  const closedHat = createMetalHat(recipe.hats, recipe.hats.closedDecay, output);
+  const openHat = createMetalHat(recipe.hats, recipe.hats.openDecay, output);
+  const transient = recipe.kick.transient > 0
+    ? new Tone.NoiseSynth({ noise: { type: "white" }, envelope: { attack: 0.0005, decay: 0.018, sustain: 0, release: 0.012 } }).connect(output)
+    : null;
+  const subFilter = recipe.kick.subTail
+    ? new Tone.Filter({ type: "lowpass", frequency: recipe.kick.subTail.cutoff, rolloff: -24 }).connect(output)
+    : null;
+  const subTail = recipe.kick.subTail && subFilter
+    ? new Tone.MembraneSynth({ pitchDecay: 0.018, octaves: 1.6, oscillator: { type: "triangle" }, envelope: { attack: 0.003, decay: recipe.kick.subTail.decay, sustain: 0, release: recipe.kick.subTail.release } }).connect(subFilter)
+    : null;
+  const nodes: Tone.ToneAudioNode[] = [kick, snareBody, tom, snareNoise, clapNoise, closedHat, openHat, output];
+  if (transient) nodes.push(transient);
+  if (subFilter && subTail) nodes.push(subTail, subFilter);
   const trigger = (voice: DrumVoice, step: Step, time: number, velocity: number) => {
-    if (voice === "kick") kick.triggerAttackRelease("C1", step.length === "long" ? "8n" : "16n", time, velocity * 0.82);
-    else if (voice === "snare") { noise.triggerAttackRelease(0.14, time, velocity * 0.7); body.triggerAttackRelease("D3", "32n", time, velocity * 0.34); }
-    else if (voice === "clap") [0, 0.012, 0.024].forEach((offset, index) => noise.triggerAttackRelease(0.045, time + offset, velocity * (0.38 - index * 0.06)));
-    else if (voice === "closedHat") hat.triggerAttackRelease("32n", time, velocity * 0.44);
-    else if (voice === "openHat") hat.triggerAttackRelease("8n", time, velocity * 0.34);
-    else body.triggerAttackRelease("G1", "8n", time, velocity * 0.64);
+    if (voice === "kick") {
+      kick.triggerAttackRelease(recipe.kick.note, step.length === "long" ? "8n" : "16n", time, velocity * recipe.kick.velocity);
+      transient?.triggerAttackRelease(0.018, time, velocity * recipe.kick.transient);
+      if (subTail && recipe.kick.subTail) subTail.triggerAttackRelease(recipe.kick.subTail.note, recipe.kick.subTail.decay, time + 0.018, velocity * recipe.kick.subTail.level);
+    } else if (voice === "snare") {
+      snareNoise.triggerAttackRelease(recipe.snare.decay, time, velocity * recipe.snare.noiseLevel);
+      snareBody.triggerAttackRelease(recipe.snare.bodyNote, "32n", time, velocity * recipe.snare.bodyLevel);
+    } else if (voice === "clap") {
+      [0, recipe.clap.spacing, recipe.clap.spacing * 2].forEach((offset, index) => clapNoise.triggerAttackRelease(recipe.clap.decay, time + offset, velocity * recipe.clap.level * (1 - index * 0.14)));
+    } else if (voice === "closedHat") closedHat.triggerAttackRelease("32n", time, velocity * recipe.hats.level);
+    else if (voice === "openHat") openHat.triggerAttackRelease("8n", time, velocity * recipe.hats.level * 0.82);
+    else tom.triggerAttackRelease(recipe.tom.note, "8n", time, velocity * recipe.tom.level);
   };
   return {
     trigger: (_notes, step, time, velocity) => {
       const layerGain = 1 / Math.sqrt(Math.max(1, step.drumVoices.length));
       step.drumVoices.forEach((voice) => trigger(voice, step, time, velocity * layerGain));
     },
-    release: (time) => { kick.triggerRelease(time); body.triggerRelease(time); noise.triggerRelease(time); hat.triggerRelease(time); },
+    release: (time) => {
+      [kick, snareBody, tom, snareNoise, clapNoise, closedHat, openHat, transient, subTail].forEach((voice) => voice?.triggerRelease(time));
+    },
     dispose: () => nodes.forEach((node) => node.dispose()),
   };
 }
 
-function createMelodicBank(track: "acid" | "stab" | "rave", preset: SoundPresetId, destination: Tone.ToneAudioNode): VoiceBank {
-  const definition = presetDefinition(track, preset);
+function createMetalHat(recipe: ReturnType<typeof presetDefinition<"drums">>["synthesis"]["hats"], decay: number, destination: Tone.ToneAudioNode): Tone.MetalSynth {
+  const hat = new Tone.MetalSynth({
+    harmonicity: recipe.harmonicity,
+    modulationIndex: recipe.modulationIndex,
+    resonance: recipe.resonance,
+    octaves: recipe.octaves,
+    envelope: { attack: 0.001, decay, release: Math.max(0.025, decay * 0.45) },
+  }).connect(destination);
+  hat.frequency.value = recipe.frequency;
+  return hat;
+}
+
+function createAcidBank(preset: SoundPresetMap["acid"], destination: Tone.ToneAudioNode): VoiceBank {
+  const definition = presetDefinition("acid", preset);
+  const recipe = definition.synthesis;
   const output = new Tone.Gain(definition.level).connect(destination);
-  const voices = Array.from({ length: VOICE_LIMITS[track] }, () => track === "acid"
-    ? new Tone.MonoSynth({
-        oscillator: { type: definition.oscillator },
-        filter: { type: "lowpass", Q: 5.5, rolloff: -24 },
-        filterEnvelope: { attack: 0.002, decay: definition.decay, sustain: 0.18, release: definition.release, baseFrequency: 90, octaves: 4.2 },
-        envelope: { attack: definition.attack, decay: definition.decay, sustain: definition.sustain, release: definition.release },
-      }).connect(output)
-    : new Tone.Synth({
-        oscillator: definition.oscillator === "fatsawtooth" ? { type: "fatsawtooth", count: 2, spread: 18 } : { type: definition.oscillator },
-        envelope: { attack: definition.attack, decay: definition.decay, sustain: definition.sustain, release: definition.release },
-      }).connect(output));
-  const nodes: Tone.ToneAudioNode[] = [...voices, output];
+  const voice = new Tone.MonoSynth({
+    oscillator: { type: recipe.oscillator },
+    filter: { type: "lowpass", Q: recipe.filterQ, rolloff: -24 },
+    filterEnvelope: { attack: 0.002, decay: recipe.filterDecay, sustain: recipe.filterSustain, release: definition.envelope.release, baseFrequency: recipe.filterBase, octaves: recipe.filterOctaves },
+    envelope: definition.envelope,
+  }).connect(output);
   return {
-    trigger: (notes, step, time, velocity) => voices.forEach((voice, index) => {
+    trigger: (notes, step, time, velocity) => {
+      const note = notes[0];
+      if (note === undefined) return;
+      const performance = acidStepParameters(preset, step.dynamics === "accent", step.slide);
+      voice.portamento = performance.portamento;
+      voice.triggerAttackRelease(Tone.Frequency(note, "midi").toFrequency(), duration(step), time, clamp01(velocity * performance.velocityMultiplier));
+    },
+    release: (time) => voice.triggerRelease(time),
+    dispose: () => { voice.dispose(); output.dispose(); },
+  };
+}
+
+type MelodicVoice = Tone.Synth | Tone.FMSynth;
+
+function createStabBank(preset: SoundPresetMap["stab"], destination: Tone.ToneAudioNode): VoiceBank {
+  const definition = presetDefinition("stab", preset);
+  const recipe = definition.synthesis;
+  const output = new Tone.Gain(definition.level).connect(destination);
+  const voices: MelodicVoice[] = Array.from({ length: VOICE_LIMITS.stab }, (_, index) => {
+    const voice = recipe.engine === "fm"
+      ? new Tone.FMSynth({
+          oscillator: { type: recipe.carrier },
+          modulation: { type: recipe.modulator },
+          harmonicity: recipe.harmonicity,
+          modulationIndex: recipe.modulationIndex,
+          envelope: definition.envelope,
+          modulationEnvelope: recipe.modulationEnvelope,
+        }).connect(output)
+      : new Tone.Synth({
+          oscillator: { type: recipe.oscillator, count: recipe.unisonCount, spread: recipe.spread },
+          envelope: definition.envelope,
+        }).connect(output);
+    if (recipe.engine === "analog") voice.detune.value = (index - 1) * recipe.detune;
+    return voice;
+  });
+  return {
+    trigger: (notes, step, time, velocity, macros) => voices.forEach((voice, index) => {
       const note = notes[index];
       if (note === undefined) return;
-      if (voice instanceof Tone.MonoSynth) voice.portamento = step.slide ? 0.08 : 0.002;
+      if (recipe.engine === "analog") voice.detune.rampTo((index - 1) * recipe.detune * (0.65 + clamp01(macros.motion) * 0.55), 0.035, time);
       voice.triggerAttackRelease(Tone.Frequency(note, "midi").toFrequency(), duration(step), time, velocity);
     }),
     release: (time) => voices.forEach((voice) => voice.triggerRelease(time)),
-    dispose: () => nodes.forEach((node) => node.dispose()),
+    dispose: () => { voices.forEach((voice) => voice.dispose()); output.dispose(); },
   };
 }
 
-function createTextureBank(preset: SoundPresetId, destination: Tone.ToneAudioNode): VoiceBank {
+function createRaveBank(preset: SoundPresetMap["rave"], destination: Tone.ToneAudioNode): VoiceBank {
+  const definition = presetDefinition("rave", preset);
+  const recipe = definition.synthesis;
+  const output = new Tone.Gain(definition.level).connect(destination);
+  const chorus = new Tone.Chorus({ frequency: definition.modulation.frequency * 0.34, delayTime: 3.2, depth: 0.42, feedback: 0.04, wet: definition.modulation.chorusWet }).connect(output).start(Tone.now());
+  const vibrato = new Tone.Vibrato({ frequency: definition.modulation.frequency, depth: definition.modulation.vibratoDepth, maxDelay: 0.004, wet: 0.16 }).connect(chorus);
+  const voiceBus = new Tone.Gain(1).connect(vibrato);
+  const voice: MelodicVoice = recipe.engine === "fm"
+    ? new Tone.FMSynth({
+        oscillator: { type: recipe.carrier },
+        modulation: { type: recipe.modulator },
+        harmonicity: recipe.harmonicity,
+        modulationIndex: recipe.modulationIndex,
+        envelope: definition.envelope,
+        modulationEnvelope: recipe.modulationEnvelope,
+      }).connect(voiceBus)
+    : new Tone.Synth({
+        oscillator: recipe.oscillator === "fatsawtooth"
+          ? { type: "fatsawtooth", count: recipe.unisonCount, spread: recipe.spread }
+          : { type: "pulse", width: recipe.pulseWidth ?? 0.4 },
+        envelope: definition.envelope,
+      }).connect(voiceBus);
+  return {
+    trigger: (notes, step, time, velocity, macros) => {
+      const note = notes[0];
+      if (note === undefined) return;
+      const motion = clamp01(macros.motion);
+      vibrato.depth.rampTo(Math.min(0.18, definition.modulation.vibratoDepth + motion * definition.modulation.vibratoMotion), 0.04, time);
+      vibrato.wet.rampTo(Math.min(0.3, 0.08 + motion * 0.18), 0.04, time);
+      chorus.wet.rampTo(Math.min(0.36, definition.modulation.chorusWet + motion * definition.modulation.chorusMotion), 0.04, time);
+      voice.triggerAttackRelease(Tone.Frequency(note, "midi").toFrequency(), duration(step), time, velocity);
+    },
+    release: (time) => voice.triggerRelease(time),
+    dispose: () => { voice.dispose(); voiceBus.dispose(); vibrato.dispose(); chorus.dispose(); output.dispose(); },
+  };
+}
+
+function createTextureBank(preset: SoundPresetMap["texture"], destination: Tone.ToneAudioNode): VoiceBank {
   const definition = presetDefinition("texture", preset);
   const output = new Tone.Gain(definition.level).connect(destination);
-  const noise = new Tone.NoiseSynth({ noise: { type: definition.brightness > 0.6 ? "white" : "pink" }, envelope: { attack: definition.attack, decay: definition.decay, sustain: definition.sustain, release: definition.release } }).connect(output);
-  const synth = new Tone.Synth({ oscillator: definition.oscillator === "fatsawtooth" ? { type: "fatsawtooth", count: 2, spread: 22 } : { type: definition.oscillator }, envelope: { attack: definition.attack, decay: definition.decay, sustain: definition.sustain, release: definition.release } }).connect(output);
-  const nodes: Tone.ToneAudioNode[] = [noise, synth, output];
+  const recipe = definition.synthesis;
+  if (recipe.source === "drone") {
+    const filter = new Tone.Filter({ type: "lowpass", frequency: recipe.filterFrequency, Q: 0.8, rolloff: -24 }).connect(output);
+    const sawGain = new Tone.Gain(recipe.sawLevel).connect(filter);
+    const sineGain = new Tone.Gain(recipe.sineLevel).connect(filter);
+    const saw = new Tone.Synth({ oscillator: { type: "fatsawtooth", count: recipe.unisonCount, spread: recipe.spread }, envelope: definition.envelope }).connect(sawGain);
+    const sine = new Tone.Synth({ oscillator: { type: "sine" }, envelope: definition.envelope }).connect(sineGain);
+    return {
+      trigger: (notes, step, time, velocity) => {
+        const note = notes[0] ?? 36;
+        saw.triggerAttackRelease(Tone.Frequency(note, "midi").toFrequency(), step.length === "short" ? "8n" : "2n", time, velocity * 0.78);
+        sine.triggerAttackRelease(Tone.Frequency(note - 12, "midi").toFrequency(), step.length === "short" ? "8n" : "2n", time, velocity * 0.64);
+      },
+      release: (time) => { saw.triggerRelease(time); sine.triggerRelease(time); },
+      dispose: () => [saw, sine, sawGain, sineGain, filter, output].forEach((node) => node.dispose()),
+    };
+  }
+
+  const filter = new Tone.Filter({ type: "bandpass", frequency: recipe.filterStart, Q: recipe.source === "riser" ? 1.3 : 1.8, rolloff: -24 }).connect(output);
+  const noise = new Tone.NoiseSynth({ noise: { type: recipe.noise }, envelope: definition.envelope }).connect(filter);
   return {
-    trigger: (notes, step, time, velocity) => preset === "noise"
-      ? noise.triggerAttackRelease(step.length === "long" ? "2n" : "8n", time, velocity)
-      : synth.triggerAttackRelease(Tone.Frequency(notes[0] ?? 36, "midi").toFrequency(), step.length === "short" ? "8n" : "2n", time, velocity),
-    release: (time) => { noise.triggerRelease(time); synth.triggerRelease(time); },
-    dispose: () => nodes.forEach((node) => node.dispose()),
+    trigger: (_notes, step, time, velocity, macros) => {
+      const motion = clamp01(macros.motion);
+      const sweepEnd = recipe.filterStart + (recipe.filterEnd - recipe.filterStart) * (0.58 + motion * 0.42);
+      filter.frequency.cancelScheduledValues(time);
+      filter.frequency.setValueAtTime(recipe.filterStart, time);
+      filter.frequency.exponentialRampToValueAtTime(sweepEnd, time + recipe.sweepSeconds);
+      const noteLength = recipe.source === "riser" ? recipe.sweepSeconds + definition.envelope.release * 0.35 : step.length === "long" ? "2n" : "8n";
+      noise.triggerAttackRelease(noteLength, time, velocity);
+    },
+    release: (time) => noise.triggerRelease(time),
+    dispose: () => { noise.dispose(); filter.dispose(); output.dispose(); },
   };
 }
 
@@ -309,3 +494,19 @@ function duration(step: Step): Tone.Unit.Time { return step.length === "short" ?
 function gainToDb(gain: number): number { return gain <= 0 ? -Infinity : 20 * Math.log10(gain); }
 function zeroPeaks(): Record<TrackKind, number> { return Object.fromEntries(TRACK_KINDS.map((track) => [track, 0])) as Record<TrackKind, number>; }
 function clamp01(value: number): number { return Math.max(0, Math.min(1, value)); }
+
+function createPeakMeter(): PeakMeter {
+  const node = Tone.getContext().createAnalyser();
+  node.fftSize = 256;
+  node.smoothingTimeConstant = 0.68;
+  const samples = new Float32Array(node.fftSize);
+  return {
+    node,
+    getValue: () => {
+      node.getFloatTimeDomainData(samples);
+      const sum = samples.reduce((total, sample) => total + sample * sample, 0);
+      return Math.sqrt(sum / samples.length);
+    },
+    dispose: () => node.disconnect(),
+  };
+}

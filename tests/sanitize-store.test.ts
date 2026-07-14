@@ -31,6 +31,13 @@ describe("vollständiges Sanitizing", () => {
     Object.assign(stab.bars[0]!.steps[0], { drumVoices: ["kick"], slide: true });
     expect(sanitizeProject(source).scenes[0]!.tracks[2]!.bars[0]!.steps[0]).toMatchObject({ drumVoices: [], slide: false });
   });
+
+  it("bewahrt gültige Preset-IDs bestehender Projekte unabhängig vom Profil", () => {
+    const existing = createFactoryProject("hard");
+    existing.soundPresets = { drums: "warehouse", acid: "rubber", stab: "flash", rave: "siren", texture: "drone" };
+    expect(sanitizeProject(existing).soundPresets).toEqual(existing.soundPresets);
+    expect(isValidProject(existing)).toBe(true);
+  });
 });
 
 describe("zentraler Store", () => {
