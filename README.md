@@ -36,6 +36,20 @@ npm run verify
 | ![Schwarze Groovebox mit massiven roten Drum-Impulsen](docs/assets/profiles/kitty-hard.webp) | ![Schwarze Groovebox mit rotem Sequencer und gelbgrüner Acid-Linie](docs/assets/profiles/kitty-acid.webp) | ![Ausgewogene schwarze Groovebox mit roten Steps und warmem Filterlicht](docs/assets/profiles/kitty-hybrid.webp) |
 | **155 BPM · F-Phrygisch**<br>Druckvolle Warehouse-Patterns | **145 BPM · A-Moll**<br>Dominante 303-Linien | **150 BPM · Fis-Moll**<br>Hard und Acid im Gleichgewicht |
 
+## Instrumentrollen
+
+| Drum Machine | Acid Bass | Stab | Rave Lead | Texture / FX |
+| --- | --- | --- | --- | --- |
+| ![Schwarze Drum Machine mit roten Pads und massiven Percussion-Reglern](docs/assets/instruments/kitty-drums.webp) | ![Schwarzer Acid-Synth mit großem Filterregler und gelbgrüner Signallinie](docs/assets/instruments/kitty-acid-bass.webp) | ![Schwarzes Stab-Modul mit drei Gruppen aus metallischen Akkordplatten](docs/assets/instruments/kitty-stab.webp) | ![Schwarzes Rave-Modul mit zentralem Hoover-Regler und rotem Sirenenbogen](docs/assets/instruments/kitty-rave.webp) | ![Schwarzes Texture-Modul mit Noise-Fläche und ansteigenden roten Lichtern](docs/assets/instruments/kitty-texture.webp) |
+| Kick, Snare, Clap, Hats und Tom | Monophone Saw-/Square-Linie mit Accent und Slide | Kurze, skalensichere Akkordschläge | Hoover-, Pulse- und Siren-Klangfarben | Noise, Drone und Übergangseffekte |
+
+## Szenenbogen
+
+| Aufwärmen | Druck | Break | Peak |
+| --- | --- | --- | --- |
+| ![Fast dunkle Groovebox mit wenigen roten Steps in einem weiten Betonraum](docs/assets/scenes/kitty-warmup.webp) | ![Dicht programmierte Groovebox mit starkem rotem Vorwärtslicht](docs/assets/scenes/kitty-drive.webp) | ![Einzelne Groovebox am Rand einer großen dunklen Freifläche](docs/assets/scenes/kitty-break.webp) | ![Voll aktive Groovebox mit leuchtendem roten Peak-Pattern](docs/assets/scenes/kitty-peak.webp) |
+| Wenige Elemente und viel Platz | Stabiler Groove mit wachsendem Druck | Reduzierte Mitte für Übergänge | Volle, aber kontrollierte Energie |
+
 ## Bedienung
 
 - `Leertaste`: Start/Stop
