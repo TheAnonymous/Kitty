@@ -9,6 +9,8 @@ synthetisiert, Projekte bleiben im `localStorage` des Browsers.
 
 **[Kitty direkt im Browser öffnen](https://theanonymous.github.io/Kitty/)**
 
+**[Visual Gallery und Press Kit ansehen](docs/GALLERY.md)**
+
 ## Loslegen
 
 Voraussetzungen sind exakt Node.js 24.15.0 und npm 12.0.0.
