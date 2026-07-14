@@ -27,9 +27,51 @@ test("lädt vollständig lokal und startet alle fünf hörbaren Spuren nach Nutz
 
   await expect.poll(async () => (await page.locator(".kitty-shell").getAttribute("data-triggered-tracks"))?.split(",").sort(), { timeout: 8_000 })
     .toEqual(["acid", "drums", "rave", "stab", "texture"]);
-  await expect(page.getByRole("meter", { name: "Pegel Drum Machine" })).toHaveAttribute("aria-valuenow", /\d+/);
+  await expect.poll(async () => Number(await page.getByRole("meter", { name: "Pegel Drum Machine" }).getAttribute("aria-valuenow")), { timeout: 8_000 }).toBeGreaterThan(0);
+  await expect.poll(async () => Number(await page.getByRole("meter", { name: "Masterpegel" }).getAttribute("aria-valuenow")), { timeout: 8_000 }).toBeGreaterThan(0);
+  await expect.poll(async () => page.locator(".kitty-shell").getAttribute("data-audio-ducking"), { timeout: 8_000 }).toBe("active");
   expect(errors).toEqual([]);
   expect(external).toEqual([]);
+});
+
+test("führt einen direkt benachbarten Acid-Slide ohne neuen Attack aus", async ({ page }) => {
+  await page.locator('.track-button[data-track="acid"]').click();
+  await page.locator('.kitty-step[data-bar="0"][data-step="1"]').click();
+  const slide = page.getByRole("switch", { name: /SLIDE/ });
+  if (await slide.getAttribute("aria-checked") !== "true") await slide.click();
+  await expect(slide).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("button", { name: /START/ }).click();
+  await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
+  await expect.poll(async () => page.locator(".kitty-shell").getAttribute("data-acid-legato"), { timeout: 8_000 }).toBe("active");
+});
+
+test("stresst schnelle Preset-Wechsel in drei parallelen Audio-Kontexten", async ({ browser }, testInfo) => {
+  test.setTimeout(60_000);
+  const pages = await Promise.all(Array.from({ length: 3 }, async () => {
+    const page = await browser.newPage();
+    await page.goto(String(testInfo.project.use.baseURL));
+    await page.evaluate(() => localStorage.clear());
+    await page.reload();
+    return page;
+  }));
+  const failures: string[] = [];
+  await Promise.all(pages.map(async (page, pageIndex) => {
+    page.on("pageerror", (error) => failures.push(`Seite ${pageIndex + 1}: ${error.message}`));
+    page.on("console", (message) => { if (message.type() === "error") failures.push(`Seite ${pageIndex + 1}: ${message.text()}`); });
+    await page.getByRole("button", { name: /START/ }).click();
+    await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
+    for (let round = 0; round < 3; round += 1) {
+      for (const track of ["drums", "acid", "stab", "rave", "texture"] as const) {
+        await page.locator(`.track-button[data-track="${track}"]`).click({ force: true });
+        await page.locator(".preset-button").evaluateAll((buttons) => buttons.forEach((button) => (button as HTMLButtonElement).click()));
+      }
+    }
+    await page.waitForTimeout(800);
+    await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible();
+    await expect(page.getByRole("alert", { name: /Audio braucht deine Hilfe/ })).toHaveCount(0);
+  }));
+  await Promise.all(pages.map((page) => page.close()));
+  expect(failures).toEqual([]);
 });
 
 test("wechselt bei laufendem Transport durch alle 15 Presets ohne Audiofehler", async ({ page }) => {

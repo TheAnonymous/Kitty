@@ -27,6 +27,11 @@ lokale Abnahme:
 npm run verify
 ```
 
+Die Browser-Suite aktiviert den Tone.Offline-Audiotest nur auf localhost mit
+`?audio-test=1`. Vor einer Veröffentlichung folgt zusätzlich die manuelle
+**[Sound-Polish-Hörmatrix](docs/SOUND_POLISH_HEARING_MATRIX.md)**; ohne diese
+Hörfreigabe wird nicht veröffentlicht.
+
 ## Oberfläche
 
 [![Kitty mit Step-Raster, Szenen, Klangfarben und Makros](docs/assets/kitty-interface.webp)](https://theanonymous.github.io/Kitty/)
@@ -73,6 +78,11 @@ Das npm-Workspace trennt die Vue-App in `apps/kitty` vom lokalen
 `@kinky-vibes/ui`-Snapshot in `packages/ui`. Domainmodell, musikalischer
 Generator, Sanitizing, Store, Speicherung, Bar-Queue und Tone.js-Engine sind
 frameworkunabhängig; Vue-Komponenten bilden nur die Bedienoberfläche.
+
+Der Audio-Mix nutzt pro Spur Eingangsfilter/EQ, lautheitskompensierte Sättigung,
+Kompression und parallele vollständig-wet Delay-/Hall-Returns. Ein hörbarer
+Kick duckt Acid, Stab, Rave und Texture tempoabhängig; der Master endet nach
+Glue, Soft-Clip und Limiter in Fader und echtem dB-/Peak-Hold-Metering.
 
 Der Speicher verwaltet höchstens acht benannte Projekte. Primärstände und die
 jeweils letzte gültige Sicherung liegen unter versionierten `kitty.*.v1`-

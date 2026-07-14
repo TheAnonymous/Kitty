@@ -65,6 +65,8 @@ const newDialog = ref(false);
 const projectsDialog = ref(false);
 const deleteDialog = ref(false);
 const triggeredTracks = ref<TrackKind[]>([]);
+const ducking = ref(false);
+const acidLegato = ref(false);
 const newName = ref("Neues Set");
 const newProfile = ref<GenreProfile>("hybrid");
 const renameValue = ref(active.value.name);
@@ -104,6 +106,8 @@ const offPlayhead = engine.onPlayhead((event) => store.dispatch({ type: "transpo
 
 const offTriggered = engine.onPlayhead((event) => {
   triggeredTracks.value = [...new Set([...triggeredTracks.value, ...event.triggeredTracks])];
+  ducking.value ||= event.ducking;
+  acidLegato.value ||= event.acidLegato;
 });
 
 function dispatch(action: Action): void { store.dispatch(action); }
@@ -137,6 +141,8 @@ function currentProjectBeforeSwitch(): void {
   if (store.getState().autosave === "saving") save();
   engine.stop();
   triggeredTracks.value = [];
+  ducking.value = false;
+  acidLegato.value = false;
 }
 
 function applyProject(result: { summary: ProjectSummary; project: typeof state.value.project; projects: ProjectSummary[] }, message: string): void {
@@ -220,7 +226,7 @@ onBeforeUnmount(() => {
     <span>Bitte öffne die Groovebox in einem aktuellen Chromium-Browser mit mindestens 1024 × 720 Pixeln.</span>
   </div>
 
-  <main class="kitty-shell" :data-triggered-tracks="triggeredTracks.join(',')">
+  <main class="kitty-shell" :data-triggered-tracks="triggeredTracks.join(',')" :data-audio-ducking="ducking ? 'active' : 'idle'" :data-acid-legato="acidLegato ? 'active' : 'idle'">
     <header class="topbar">
       <div class="brand-block">
         <span class="brand-mark" aria-hidden="true">K</span>

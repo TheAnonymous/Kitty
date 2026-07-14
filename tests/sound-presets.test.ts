@@ -76,10 +76,10 @@ describe("typisierte Preset-Rezepte", () => {
     const warehouse = presetDefinition("drums", "warehouse").synthesis;
     const steel = presetDefinition("drums", "steel").synthesis;
     const rumble = presetDefinition("drums", "rumble").synthesis;
-    expect(warehouse.kick.transient).toBe(0);
-    expect(steel.kick.transient).toBeGreaterThan(0);
+    expect(warehouse.kick.transient).toBeGreaterThan(0);
+    expect(steel.kick.transient).toBeGreaterThan(warehouse.kick.transient);
     expect(steel.hats.resonance).toBeGreaterThan(warehouse.hats.resonance);
-    expect(rumble.kick.subTail).toMatchObject({ cutoff: 145 });
+    expect(rumble.kick.subTail).toMatchObject({ cutoff: 110 });
     expect(rumble.kick.subTail!.decay).toBeGreaterThan(warehouse.snare.decay);
     expect(new Set([warehouse.snare.bodyNote, steel.snare.bodyNote, rumble.snare.bodyNote]).size).toBe(3);
   });

@@ -66,7 +66,7 @@ export interface AcidPresetRecipe extends PresetRecipeBase<"acid"> {
     filterSustain: number;
     portamento: number;
     slidePortamento: number;
-    accent: { filterBoost: number; saturationBoost: number; velocityBoost: number };
+    accent: { filterBoost: number; saturationBoost: number; velocityBoost: number; decayMultiplier: number };
   };
 }
 
@@ -189,11 +189,11 @@ export const SOUND_PRESET_DEFINITIONS = {
   drums: [
     {
       id: "warehouse", kind: "drums", label: "Warehouse",
-      hint: "Trockene Sinus-Kick, körperreiche Snare und kontrollierte Metall-Hats.",
-      level: 0.52, envelope: { attack: 0.001, decay: 0.28, sustain: 0, release: 0.11 },
+      hint: "Tiefe 909-Kick mit kurzem Click, trockener Snare und dreifachem Clap-Burst.",
+      level: 0.56, envelope: { attack: 0.001, decay: 0.3, sustain: 0, release: 0.11 },
       effects: effects({ filterBase: 8_200, filterMin: 0.62, filterMax: 1.28, resonancePressure: 1.5, delaySpace: 0.12, delayMotion: 0.035, reverbSpace: 0.16, saturationBase: 0.025, saturationPressure: 0.14 }),
       synthesis: {
-        kick: { oscillator: "sine", note: "C1", pitchDecay: 0.042, octaves: 5.2, velocity: 0.86, transient: 0 },
+        kick: { oscillator: "sine", note: "C1", pitchDecay: 0.048, octaves: 5.5, velocity: 0.88, transient: 0.12 },
         snare: { noise: "pink", decay: 0.15, bodyNote: "D3", bodyDecay: 0.18, noiseLevel: 0.68, bodyLevel: 0.42 },
         clap: { decay: 0.048, spacing: 0.012, level: 0.38 },
         hats: { harmonicity: 5.1, modulationIndex: 25, resonance: 3_500, octaves: 1.35, frequency: 225, closedDecay: 0.065, openDecay: 0.2, level: 0.4 },
@@ -202,7 +202,7 @@ export const SOUND_PRESET_DEFINITIONS = {
     },
     {
       id: "steel", kind: "drums", label: "Stahl",
-      hint: "Kurze helle Kick, weißer Transient und hochresonante Metall-Hats.",
+      hint: "Kurze höhere Kick, aggressiver Click und hart gesättigte Noise-/Metall-Layer.",
       level: 0.46, envelope: { attack: 0.001, decay: 0.19, sustain: 0, release: 0.075 },
       effects: effects({ filterBase: 10_200, filterMin: 0.7, filterMax: 1.25, resonanceBase: 1.05, resonancePressure: 2.15, delaySpace: 0.1, reverbSpace: 0.13, saturationBase: 0.09, saturationPressure: 0.21 }),
       synthesis: {
@@ -215,11 +215,11 @@ export const SOUND_PRESET_DEFINITIONS = {
     },
     {
       id: "rumble", kind: "drums", label: "Rumble",
-      hint: "Langer Sinus-/Dreieckkörper mit stabilem, gefiltertem Sub-Tail.",
+      hint: "Trockener Kick-Transient mit getrenntem, gesättigtem 40–110-Hz-Rumble.",
       level: 0.48, envelope: { attack: 0.001, decay: 0.42, sustain: 0, release: 0.24 },
       effects: effects({ filterBase: 6_200, filterMin: 0.54, filterMax: 1.2, resonancePressure: 1.25, delaySpace: 0.08, delayMotion: 0.025, feedbackBase: 0.05, feedbackMotion: 0.14, reverbSpace: 0.12, saturationBase: 0.055, saturationPressure: 0.18 }),
       synthesis: {
-        kick: { oscillator: "triangle", note: "B0", pitchDecay: 0.06, octaves: 4.6, velocity: 0.82, transient: 0, subTail: { note: "F0", decay: 0.68, release: 0.32, cutoff: 145, level: 0.46 } },
+        kick: { oscillator: "triangle", note: "B0", pitchDecay: 0.06, octaves: 4.6, velocity: 0.82, transient: 0.08, subTail: { note: "F0", decay: 0.68, release: 0.32, cutoff: 110, level: 0.46 } },
         snare: { noise: "pink", decay: 0.17, bodyNote: "C3", bodyDecay: 0.24, noiseLevel: 0.58, bodyLevel: 0.46 },
         clap: { decay: 0.055, spacing: 0.014, level: 0.31 },
         hats: { harmonicity: 4.2, modulationIndex: 20, resonance: 2_800, octaves: 1.15, frequency: 205, closedDecay: 0.08, openDecay: 0.24, level: 0.34 },
@@ -233,21 +233,21 @@ export const SOUND_PRESET_DEFINITIONS = {
       hint: "Klassische Sägezahnlinie mit ausgewogener Filterhüllkurve.",
       level: 0.32, envelope: { attack: 0.003, decay: 0.16, sustain: 0.28, release: 0.085 },
       effects: effects({ filterBase: 920, filterMin: 0.56, filterMax: 1.72, resonanceBase: 2.1, resonancePressure: 5.4, delaySpace: 0.16, delayMotion: 0.07, reverbSpace: 0.19, saturationBase: 0.07, saturationPressure: 0.17 }),
-      synthesis: { oscillator: "sawtooth", filterBase: 92, filterOctaves: 4.1, filterQ: 5.6, filterDecay: 0.17, filterSustain: 0.2, portamento: 0.004, slidePortamento: 0.075, accent: { filterBoost: 1.22, saturationBoost: 0.045, velocityBoost: 1.08 } },
+      synthesis: { oscillator: "sawtooth", filterBase: 92, filterOctaves: 4.1, filterQ: 5.6, filterDecay: 0.17, filterSustain: 0.2, portamento: 0.004, slidePortamento: 0.075, accent: { filterBoost: 1.22, saturationBoost: 0.045, velocityBoost: 1.08, decayMultiplier: 0.82 } },
     },
     {
       id: "venom", kind: "acid", label: "Venom",
       hint: "Scharfer Saw, schnelle Hüllkurve und stärkster kontrollierter Biss.",
       level: 0.28, envelope: { attack: 0.002, decay: 0.105, sustain: 0.18, release: 0.055 },
       effects: effects({ filterBase: 1_180, filterMin: 0.62, filterMax: 1.85, resonanceBase: 2.6, resonancePressure: 6.1, delaySpace: 0.13, delayMotion: 0.085, reverbSpace: 0.15, saturationBase: 0.12, saturationPressure: 0.2 }),
-      synthesis: { oscillator: "sawtooth", filterBase: 105, filterOctaves: 5, filterQ: 7.8, filterDecay: 0.105, filterSustain: 0.12, portamento: 0.003, slidePortamento: 0.055, accent: { filterBoost: 1.34, saturationBoost: 0.06, velocityBoost: 1.1 } },
+      synthesis: { oscillator: "sawtooth", filterBase: 105, filterOctaves: 5, filterQ: 7.8, filterDecay: 0.105, filterSustain: 0.12, portamento: 0.003, slidePortamento: 0.055, accent: { filterBoost: 1.34, saturationBoost: 0.06, velocityBoost: 1.1, decayMultiplier: 0.7 } },
     },
     {
       id: "rubber", kind: "acid", label: "Rubber",
       hint: "Warmer Square-Puls mit tiefem Filter, elastischem Release und langem Slide.",
       level: 0.34, envelope: { attack: 0.004, decay: 0.21, sustain: 0.36, release: 0.15 },
       effects: effects({ filterBase: 720, filterMin: 0.5, filterMax: 1.58, resonanceBase: 1.7, resonancePressure: 4.7, delaySpace: 0.18, delayMotion: 0.055, reverbSpace: 0.2, saturationBase: 0.05, saturationPressure: 0.14 }),
-      synthesis: { oscillator: "square", filterBase: 72, filterOctaves: 3.5, filterQ: 4.7, filterDecay: 0.23, filterSustain: 0.3, portamento: 0.008, slidePortamento: 0.13, accent: { filterBoost: 1.16, saturationBoost: 0.035, velocityBoost: 1.06 } },
+      synthesis: { oscillator: "square", filterBase: 72, filterOctaves: 3.5, filterQ: 4.7, filterDecay: 0.23, filterSustain: 0.3, portamento: 0.008, slidePortamento: 0.13, accent: { filterBoost: 1.16, saturationBoost: 0.035, velocityBoost: 1.06, decayMultiplier: 0.9 } },
     },
   ],
   stab: [
@@ -368,6 +368,7 @@ export function acidStepParameters(preset: SoundPresetMap["acid"], accent: boole
     filterBoost: accent ? recipe.accent.filterBoost : 1,
     saturationBoost: accent ? recipe.accent.saturationBoost : 0,
     velocityMultiplier: accent ? recipe.accent.velocityBoost : 1,
+    decayMultiplier: accent ? recipe.accent.decayMultiplier : 1,
     portamento: slide ? recipe.slidePortamento : recipe.portamento,
   };
 }

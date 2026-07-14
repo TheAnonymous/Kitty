@@ -14,7 +14,7 @@ describe("vollständiges Sanitizing", () => {
     damaged.mix = [{ instrument: "unknown", volume: Number.POSITIVE_INFINITY }];
     damaged.scenes = [{ role: "warmup", name: "  Eigene Szene  ", tracks: [{ instrument: "acid", bars: [{ steps: [{ enabled: true, degree: 99, octave: -2, slide: "yes" }] }] }] }];
     const clean = sanitizeProject(damaged);
-    expect(clean).toMatchObject({ profile: "acid", tempo: 180, swing: 0, masterVolume: 0.76, root: "A", scale: "minor" });
+    expect(clean).toMatchObject({ profile: "acid", tempo: 180, swing: 0, masterVolume: 0.9, root: "A", scale: "minor" });
     expect(clean.mix).toHaveLength(5);
     expect(clean.scenes).toHaveLength(4);
     expect(clean.scenes[0]!.name).toBe("Eigene Szene");

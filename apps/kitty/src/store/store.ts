@@ -224,6 +224,11 @@ export function effectiveTrackGains(project: ProjectV1): Record<TrackKind, numbe
   const solo = project.mix.some((entry) => entry.solo && !entry.muted);
   return Object.fromEntries(project.mix.map((entry) => [
     entry.instrument,
-    entry.muted || (solo && !entry.solo) ? 0 : Math.max(0, Math.min(1, entry.volume)),
+    entry.muted || (solo && !entry.solo) ? 0 : audibleFaderGain(entry.volume),
   ])) as Record<TrackKind, number>;
+}
+
+function audibleFaderGain(value: number): number {
+  const safe = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+  return safe * safe;
 }

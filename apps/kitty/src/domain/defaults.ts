@@ -62,13 +62,17 @@ export function createFactoryProject(profile: GenreProfile = "hybrid"): ProjectV
     root: definition.root,
     scale: definition.scale,
     swing: profile === "hard" ? 0.04 : 0.08,
-    masterVolume: 0.76,
+    masterVolume: 0.9,
     soundPresets: { ...PROFILE_SOUND_PRESETS[profile] },
     mix: TRACK_KINDS.map((instrument) => ({
       instrument,
       muted: false,
       solo: false,
-      volume: instrument === "texture" ? 0.55 : instrument === "rave" ? 0.64 : 0.78,
+      volume: instrument === "drums" ? 0.94
+        : instrument === "acid" ? 0.88
+          : instrument === "stab" ? 0.82
+            : instrument === "rave" ? 0.8
+              : 0.74,
     })),
     scenes,
   };

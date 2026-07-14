@@ -5,6 +5,7 @@ const e2ePort = Number.parseInt(process.env.KITTY_E2E_PORT ?? "4173", 10);
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
+  workers: 1,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   reporter: "list",
