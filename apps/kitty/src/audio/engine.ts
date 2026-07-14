@@ -66,6 +66,9 @@ export class ToneAudioEngine {
   private masterMeter: PeakMeter | null = null;
   private readonly banks = new Map<string, VoiceBank>();
   private activePresets: Partial<Record<TrackKind, SoundPresetId>> = {};
+  private appliedTempo: number | null = null;
+  private appliedSwing: number | null = null;
+  private appliedMasterVolume: number | null = null;
   private scheduleId: number | null = null;
   private meterFrame: number | null = null;
   private peak = 0;
@@ -143,6 +146,9 @@ export class ToneAudioEngine {
     this.masterNodes = [];
     this.masterMeter = null;
     this.activePresets = {};
+    this.appliedTempo = null;
+    this.appliedSwing = null;
+    this.appliedMasterVolume = null;
     this.initialized = false;
   }
 
@@ -176,10 +182,19 @@ export class ToneAudioEngine {
 
   private applyProject(): void {
     const transport = Tone.getTransport();
-    transport.bpm.rampTo(this.project.tempo, 0.08);
-    transport.swing = this.project.swing;
-    transport.swingSubdivision = "16n";
-    Tone.getDestination().volume.rampTo(gainToDb(this.project.masterVolume), 0.04);
+    if (this.appliedTempo !== this.project.tempo) {
+      transport.bpm.rampTo(this.project.tempo, 0.08);
+      this.appliedTempo = this.project.tempo;
+    }
+    if (this.appliedSwing !== this.project.swing) {
+      transport.swing = this.project.swing;
+      transport.swingSubdivision = "16n";
+      this.appliedSwing = this.project.swing;
+    }
+    if (this.appliedMasterVolume !== this.project.masterVolume) {
+      Tone.getDestination().volume.rampTo(gainToDb(this.project.masterVolume), 0.04);
+      this.appliedMasterVolume = this.project.masterVolume;
+    }
     const gains = effectiveTrackGains(this.project);
     const playing = this.scheduleId !== null;
     for (const track of TRACK_KINDS) {
