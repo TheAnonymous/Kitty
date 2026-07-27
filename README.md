@@ -106,3 +106,9 @@ sind nicht Teil der verbindlichen Abnahme.
 
 Kitty steht unter der MIT-Lizenz. Herkunft und Lizenzen eingebetteter Assets
 sind in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) dokumentiert.
+
+<!-- github-cicd-policy -->
+## Local validation policy
+
+This repository does not use GitHub Actions or any other GitHub-hosted CI/CD. Run tests, linters, builds, and all other checks locally before merging. A documented successful local test run is sufficient for review and merge.
+<!-- /github-cicd-policy -->
