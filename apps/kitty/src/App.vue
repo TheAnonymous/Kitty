@@ -22,6 +22,7 @@ import { encodeWav, trimmedLength } from "./audio/wav";
 import { MidiLink, type MidiStatus } from "./midi";
 import { Tour, type TourStep } from "./tour";
 import { PlaybackWakeLock } from "./wake-lock";
+import { versionLabel } from "./version";
 import StepGrid from "./components/StepGrid.vue";
 import { PROFILE_DEFINITIONS } from "./domain/defaults";
 import { DEGREE_LABELS, ROOT_LABELS, SCALE_LABELS } from "./domain/music";
@@ -107,6 +108,7 @@ const newProfile = ref<GenreProfile>("hybrid");
 const renameValue = ref(active.value.name);
 const importInput = ref<HTMLInputElement | null>(null);
 const baseUrl = import.meta.env.BASE_URL;
+const appVersion = versionLabel();
 const shareFeedback = ref("");
 const sharedOnPhone = ref(window.location.hash.startsWith("#p="));
 const exportDialog = ref(false);
@@ -781,7 +783,7 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <footer><span>Alles läuft lokal in deinem Browser · Projekte sicherst du unter Projekte → Als Datei sichern.</span><span>LEERTASTE Start/Stop · 1–5 Spuren · UMSCHALT+1–4 Szenen · V Variation · R Typisch · ? Hilfe</span></footer>
+    <footer><span>Alles läuft lokal in deinem Browser · Projekte sicherst du unter Projekte → Als Datei sichern · <span data-app-version>{{ appVersion }}</span></span><span>LEERTASTE Start/Stop · 1–5 Spuren · UMSCHALT+1–4 Szenen · V Variation · R Typisch · ? Hilfe</span></footer>
   </main>
 
   <KvDialog v-model:open="newDialog" title="Neues Werkprojekt" description="Das Profil setzt nur dieses neue Projekt auf. Bestehende Musik bleibt unverändert." close-label="Schließen">

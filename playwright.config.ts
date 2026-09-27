@@ -9,7 +9,7 @@ export default defineConfig({
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   reporter: "list",
-  expect: { toHaveScreenshot: { maxDiffPixelRatio: 0.015 } },
+  expect: { toHaveScreenshot: { maxDiffPixelRatio: 0.015, stylePath: "./e2e/screenshot.css" } },
   use: {
     baseURL: `http://127.0.0.1:${e2ePort}/Kitty/`,
     trace: "on-first-retry",
