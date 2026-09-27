@@ -58,6 +58,15 @@ Hörfreigabe wird nicht veröffentlicht.
 | ![Fast dunkle Groovebox mit wenigen roten Steps in einem weiten Betonraum](docs/assets/scenes/kitty-warmup.webp) | ![Dicht programmierte Groovebox mit starkem rotem Vorwärtslicht](docs/assets/scenes/kitty-drive.webp) | ![Einzelne Groovebox am Rand einer großen dunklen Freifläche](docs/assets/scenes/kitty-break.webp) | ![Voll aktive Groovebox mit leuchtendem roten Peak-Pattern](docs/assets/scenes/kitty-peak.webp) |
 | Wenige Elemente und viel Platz | Stabiler Groove mit wachsendem Druck | Reduzierte Mitte für Übergänge | Volle, aber kontrollierte Energie |
 
+Mit **Szenenfolge an** spielt Kitty die vier Szenen nacheinander und beginnt
+danach wieder von vorn, jede Szene 4, 8 oder 16 Takte lang. Eine Szene, die du
+dabei selbst anwählst, startet wie gewohnt am nächsten Takt; die Folge geht von
+dort weiter. **Als WAV exportieren** rendert den ganzen Bogen oder die gewählte
+Szene als Loop durch dieselbe Engine wie die Wiedergabe, schneller als in
+Echtzeit (16 Bit, 44,1 kHz, Stereo). **Link teilen** packt das ganze Projekt
+komprimiert in den Teil der Adresse hinter `#`; er wird nie an den Server
+geschickt, und wer den Link öffnet, übernimmt eine eigene Kopie.
+
 ## Bedienung
 
 - `Leertaste`: Start/Stop
@@ -106,11 +115,11 @@ zusammen mit Groovebox und der Übersichtsseite ein Release;
 `scripts/musik-deploy.sh` schaltet es atomar um und prüft jede Datei über HTTPS,
 `scripts/musik-rollback.sh` kehrt zum vorherigen Release zurück.
 
-## Grenzen von V1
+## Grenzen
 
-Kein Backend, Cloud-Sync, Arrangement, MIDI, Sample-Import, Audioexport
-oder PWA. Smartphone, Tablet, Firefox und Safari
-sind nicht Teil der verbindlichen Abnahme.
+Kein Backend, Cloud-Sync, Sample-Import oder PWA; das Arrangement ist die feste
+Szenenfolge. Smartphone und Tablet bekommen eine Hinweisseite statt der
+Oberfläche. Firefox und Safari sind nicht Teil der verbindlichen Abnahme.
 
 Kitty steht unter der MIT-Lizenz. Herkunft und Lizenzen eingebetteter Assets
 sind in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) dokumentiert.

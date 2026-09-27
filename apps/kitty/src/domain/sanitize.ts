@@ -6,6 +6,7 @@ import type {
   MixChannel,
   ProjectV1,
   Scene,
+  SceneRepeats,
   Step,
   TrackKind,
   TrackMacros,
@@ -13,6 +14,7 @@ import type {
 } from "./types";
 import {
   BARS_PER_SCENE,
+  DEFAULT_SCENE_REPEATS,
   DYNAMICS,
   GENRE_PROFILES,
   MAX_SWING,
@@ -21,6 +23,7 @@ import {
   ROOT_NOTES,
   SCALES,
   SCENE_COUNT,
+  SCENE_REPEATS,
   SCENE_ROLES,
   SCHEMA_VERSION,
   SOUND_PRESETS,
@@ -143,9 +146,14 @@ export function sanitizeProject(value: unknown): ProjectV1 {
       const candidate = scenes.find((entry) => record(entry).role === role) ?? scenes[index];
       return sanitizeScene(candidate, fallback.scenes[index]!);
     }),
+    sceneRepeats: SCENE_REPEATS.includes(source.sceneRepeats as SceneRepeats) ? source.sceneRepeats as SceneRepeats : DEFAULT_SCENE_REPEATS,
   };
 }
 
 export function isValidProject(value: unknown): value is ProjectV1 {
-  return looksLikeProject(value) && JSON.stringify(sanitizeProject(value)) === JSON.stringify(value);
+  if (!looksLikeProject(value)) return false;
+  // Saves from before the scene chain carry no sceneRepeats and are still intact.
+  const source = record(value);
+  const complete = "sceneRepeats" in source ? source : { ...source, sceneRepeats: DEFAULT_SCENE_REPEATS };
+  return JSON.stringify(sanitizeProject(complete)) === JSON.stringify(complete);
 }

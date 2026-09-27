@@ -6,6 +6,9 @@ export const STEPS_PER_BAR = 16;
 export const MIN_TEMPO = 120;
 export const MAX_TEMPO = 180;
 export const MAX_SWING = 0.35;
+/** Passes of each scene in the scene chain and the arc export: 4, 8 or 16 bars. */
+export const SCENE_REPEATS = [1, 2, 4] as const;
+export const DEFAULT_SCENE_REPEATS = 2;
 
 export const GENRE_PROFILES = ["hard", "acid", "hybrid"] as const;
 export const TRACK_KINDS = ["drums", "acid", "stab", "rave", "texture"] as const;
@@ -36,6 +39,7 @@ export type StepLength = (typeof STEP_LENGTHS)[number];
 export type VariationAmount = (typeof VARIATION_AMOUNTS)[number];
 export type DrumVoice = (typeof DRUM_VOICES)[number];
 export type MacroKind = (typeof MACRO_KINDS)[number];
+export type SceneRepeats = (typeof SCENE_REPEATS)[number];
 export type SoundPresetId = (typeof SOUND_PRESETS)[TrackKind][number];
 export type SoundPresetMap = { [K in TrackKind]: (typeof SOUND_PRESETS)[K][number] };
 
@@ -89,6 +93,7 @@ export interface ProjectV1 {
   mix: MixChannel[];
   soundPresets: SoundPresetMap;
   scenes: Scene[];
+  sceneRepeats: SceneRepeats;
 }
 
 export interface ProjectSummary {
@@ -104,6 +109,8 @@ export interface AppUiState {
   selectedStep: number | null;
   variationAmount: VariationAmount;
   locks: Record<TrackKind, [boolean, boolean, boolean, boolean]>;
+  /** Plays warmup → drive → break → peak in a loop, each scene `sceneRepeats` times. */
+  sceneChain: boolean;
 }
 
 export interface TransportState {

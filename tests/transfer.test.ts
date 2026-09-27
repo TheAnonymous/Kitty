@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createFactoryProject } from "@/domain/defaults";
 import { KittyProjectRepository, MAX_PROJECTS } from "@/storage";
-import { FILE_FORMAT, nameFromFileName, parseProjectFile, projectFileName, serializeProjectFile } from "@/transfer";
+import { decodeShareFragment, encodeShareFragment, FILE_FORMAT, fileSlug, nameFromFileName, parseProjectFile, projectFileName, serializeProjectFile } from "@/transfer";
 
 class MemoryStorage implements Storage {
   readonly values = new Map<string, string>();
@@ -44,7 +44,7 @@ describe("Projektdateien", () => {
   });
 
   it("bildet sichere Dateinamen", () => {
-    expect(projectFileName("Säure & Stahl")).toBe("saure-stahl.kitty.json");
+    expect(projectFileName("Säure & Stahl")).toBe("saeure-stahl.kitty.json");
   });
 
   it("importiert als neues Projekt und respektiert die Obergrenze", () => {
@@ -56,5 +56,33 @@ describe("Projektdateien", () => {
     expect(repository.load().active.id).toBe(result.summary.id);
     const full = Array.from({ length: MAX_PROJECTS }, (_, index) => ({ id: `p${index}`, name: `P${index}`, updatedAt: "2026-09-27T20:00:00Z" }));
     expect(() => repository.importProject("Zu viel", createFactoryProject(), full)).toThrow("acht");
+  });
+});
+
+describe("Teilen-Link", () => {
+  it("packt ein Projekt verlustfrei in ein kompaktes Fragment", async () => {
+    const project = createFactoryProject("hard");
+    project.tempo = 171;
+    project.sceneRepeats = 4;
+    const fragment = await encodeShareFragment("Für Mo", project);
+    expect(fragment.startsWith("p=1.")).toBe(true);
+    expect(fragment.length).toBeLessThan(12_000);
+    expect(/^p=1\.[A-Za-z0-9_-]+$/.test(fragment)).toBe(true);
+    const shared = await decodeShareFragment(`#${fragment}`);
+    expect(shared?.name).toBe("Für Mo");
+    expect(shared?.project).toEqual(project);
+  });
+
+  it("ignoriert fremde Fragmente und meldet beschädigte Links", async () => {
+    expect(await decodeShareFragment("#oben")).toBeNull();
+    await expect(decodeShareFragment("#p=1.abc")).rejects.toThrow("beschädigt");
+    await expect(decodeShareFragment("#p=2.abc")).rejects.toThrow("neueren");
+    await expect(decodeShareFragment("#p=1.$$$")).rejects.toThrow("unvollständig");
+  });
+
+  it("baut lesbare Dateinamen mit deutschen Umlauten", () => {
+    expect(fileSlug("Aufwärmen")).toBe("aufwaermen");
+    expect(fileSlug("Größte Übung")).toBe("groesste-uebung");
+    expect(fileSlug("   ", "szene")).toBe("unbenanntes-projekt");
   });
 });

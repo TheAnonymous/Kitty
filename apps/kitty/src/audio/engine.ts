@@ -30,7 +30,7 @@ import { DetuneSource, FmVoice, LeanEnvelope, LeanTone, NoiseVoice, OneShotTone,
 import { BarQueuedTransport, type SequencerPosition } from "./transport";
 
 export interface AudioStatusEvent { status: "idle" | "starting" | "playing" | "suspended" | "error"; message: string; }
-export interface PlayheadEvent extends SequencerPosition { peak: number; trackPeaks: Record<TrackKind, number>; triggeredTracks: TrackKind[]; ducking: boolean; acidLegato: boolean; }
+export interface PlayheadEvent extends SequencerPosition { peak: number; trackPeaks: Record<TrackKind, number>; triggeredTracks: TrackKind[]; ducking: boolean; acidLegato: boolean; chainNext: number | null; }
 
 interface TrackStrip extends TrackGraph {
   meter: PeakMeter;
@@ -66,6 +66,13 @@ const DRUM_TAIL_SECONDS = 1.5;
 export interface EngineOptions {
   /** Renders inside an offline context: no context-state checks, meters, draw callbacks or sleeping banks. */
   offline?: boolean;
+}
+
+/** What an offline render plays: the start scene, the chain setting and the number of sixteenth steps. */
+export interface RenderPlan {
+  startScene: number;
+  chainRepeats: number | null;
+  steps: number;
 }
 
 export const VOICE_LIMITS: Record<TrackKind, number> = { drums: 6, acid: 1, stab: 4, rave: 5, texture: 2 };
@@ -147,6 +154,25 @@ export class ToneAudioEngine {
 
   queueScene(scene: number): number | null { return this.clock.queue(scene); }
 
+  setSceneChain(repeats: number | null): void { this.clock.setChain(repeats); }
+
+  /** Builds the full signal path in the current (offline) context and schedules `plan` on its transport. */
+  async scheduleOffline(plan: RenderPlan): Promise<void> {
+    if (!this.options.offline) throw new Error("scheduleOffline braucht eine Offline-Engine");
+    const transport = Tone.getTransport();
+    transport.bpm.value = this.project.tempo;
+    this.appliedTempo = this.project.tempo;
+    this.clock.setChain(plan.chainRepeats);
+    this.clock.start(plan.startScene);
+    await this.createGraph();
+    let remaining = plan.steps;
+    this.scheduleId = transport.scheduleRepeat((time) => {
+      if (remaining <= 0) return;
+      remaining -= 1;
+      this.tick(time);
+    }, "16n", 0);
+  }
+
   syncProject(project: ProjectV1): void {
     this.project = structuredClone(project);
     if (this.initialized) this.applyProject();
@@ -196,7 +222,7 @@ export class ToneAudioEngine {
     await Promise.all(Object.values(strips).map((strip) => strip.ready));
     if (this.strips !== strips) throw new Error("Audio-Vorbereitung wurde abgebrochen");
     this.initialized = true;
-    this.monitorMeters();
+    if (!this.options.offline) this.monitorMeters();
     this.applyProject();
   }
 
@@ -239,7 +265,7 @@ export class ToneAudioEngine {
   }
 
   private tick(time: number): void {
-    if (Tone.getContext().state !== "running") {
+    if (!this.options.offline && Tone.getContext().state !== "running") {
       this.stop(false);
       this.emitStatus("suspended", "Audio wurde vom Browser pausiert – Start erneut anklicken");
       return;
@@ -250,8 +276,10 @@ export class ToneAudioEngine {
     if (ducking) this.triggerDucking(time);
     const acidLegato = this.hasAcidLegato(position);
     const triggeredTracks = TRACK_KINDS.filter((track) => this.triggerTrack(track, position, time));
+    if (this.options.offline) return;
+    const chainNext = this.clock.chainNext;
     Tone.getDraw().schedule(() => {
-      const event = { ...position, peak: this.peak, trackPeaks: { ...this.trackPeaks }, triggeredTracks, ducking, acidLegato };
+      const event = { ...position, peak: this.peak, trackPeaks: { ...this.trackPeaks }, triggeredTracks, ducking, acidLegato, chainNext };
       for (const listener of this.playheadListeners) listener(event);
     }, time);
   }

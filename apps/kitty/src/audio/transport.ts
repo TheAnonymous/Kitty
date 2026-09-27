@@ -1,18 +1,35 @@
-import { STEPS_PER_BAR } from "../domain/types";
+import { SCENE_COUNT, STEPS_PER_BAR, BARS_PER_SCENE } from "../domain/types";
 
-export interface SequencerPosition { scene: number; bar: number; step: number; switched: boolean; }
+export interface SequencerPosition {
+  scene: number;
+  bar: number;
+  step: number;
+  switched: boolean;
+  /** Completed passes through the running scene since it started (0 during the first pass). */
+  pass: number;
+}
 
+const STEPS_PER_PASS = STEPS_PER_BAR * BARS_PER_SCENE;
+
+/**
+ * Sixteenth-note clock over four scenes of four bars. A queued scene starts at
+ * the next bar line. With a scene chain every scene plays `repeats` passes and
+ * then hands over to the next one (Warmup → Drive → Break → Peak → …).
+ */
 export class BarQueuedTransport {
   private scene = 0;
   private position = 0;
   private queued: number | null = null;
   private hasTicked = false;
+  private passes = 0;
+  private chainRepeats: number | null = null;
 
   start(scene: number): void {
     this.scene = clampScene(scene);
     this.position = 0;
     this.queued = null;
     this.hasTicked = false;
+    this.passes = 0;
   }
 
   queue(scene: number): number | null {
@@ -21,24 +38,39 @@ export class BarQueuedTransport {
     return this.queued;
   }
 
-  reset(): void { this.position = 0; this.queued = null; this.hasTicked = false; }
+  /** `null` switches the chain off; otherwise every scene plays this many passes. */
+  setChain(repeats: number | null): void {
+    this.chainRepeats = repeats === null ? null : Math.max(1, Math.round(repeats));
+  }
+
+  reset(): void { this.position = 0; this.queued = null; this.hasTicked = false; this.passes = 0; }
 
   next(): SequencerPosition {
     let switched = false;
+    if (this.hasTicked && this.position === 0) {
+      this.passes += 1;
+      if (this.chainRepeats !== null && this.queued === null && this.passes >= this.chainRepeats) {
+        this.queued = (this.scene + 1) % SCENE_COUNT;
+      }
+    }
     if (this.hasTicked && this.position % STEPS_PER_BAR === 0 && this.queued !== null) {
       this.scene = this.queued;
       this.queued = null;
       this.position = 0;
+      this.passes = 0;
       switched = true;
     }
-    const result = { scene: this.scene, bar: Math.floor(this.position / STEPS_PER_BAR), step: this.position % STEPS_PER_BAR, switched };
-    this.position = (this.position + 1) % 64;
+    const result = { scene: this.scene, bar: Math.floor(this.position / STEPS_PER_BAR), step: this.position % STEPS_PER_BAR, switched, pass: this.passes };
+    this.position = (this.position + 1) % STEPS_PER_PASS;
     this.hasTicked = true;
     return result;
   }
 
   get runningScene(): number { return this.scene; }
   get queuedScene(): number | null { return this.queued; }
+
+  /** The scene the chain moves to after the running one, or `null` without a chain. */
+  get chainNext(): number | null { return this.chainRepeats === null ? null : (this.scene + 1) % SCENE_COUNT; }
 }
 
-function clampScene(scene: number): number { return Math.max(0, Math.min(3, Math.round(scene))); }
+function clampScene(scene: number): number { return Math.max(0, Math.min(SCENE_COUNT - 1, Math.round(scene))); }

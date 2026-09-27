@@ -218,3 +218,62 @@ test("sichert ein Projekt als Datei und öffnet es als neues Projekt", async ({ 
   await page.getByRole("button", { name: "Projekte" }).click();
   await expect(page.locator(".project-list button")).toHaveCount(2);
 });
+
+test("spielt die Szenenfolge und exportiert eine Szene als WAV", async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  const chain = page.getByRole("switch", { name: "Szenenfolge" });
+  await expect(chain).toHaveAttribute("aria-checked", "false");
+  await page.getByRole("button", { name: "4 TAKTE" }).click();
+  await expect(page.getByRole("button", { name: "4 TAKTE" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".arrangement-hint")).toHaveText("je Szene · ganzer Bogen 0:26 min");
+  await chain.click();
+  await expect(chain).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("button", { name: /START/ }).click();
+  await expect(page.locator(".transport-readout")).toContainText("Szenenfolge · Aufwärmen 1/1 → Druck", { timeout: 10_000 });
+  await expect(page.locator('.scene-pad[data-scene="1"] small')).toHaveText("DANACH");
+  await page.getByRole("button", { name: /STOP/ }).click();
+
+  await page.getByRole("button", { name: "Als WAV exportieren" }).click();
+  await page.getByText(/Nur „Aufwärmen“/).click();
+  await expect(page.getByRole("radio", { name: /Nur „Aufwärmen“/ })).toBeChecked();
+  const download = page.waitForEvent("download", { timeout: 60_000 });
+  await page.locator("[data-confirm-export]").click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("kitty-hybrid-aufwaermen.wav");
+  const path = testInfo.outputPath(file.suggestedFilename());
+  await file.saveAs(path);
+  const { readFileSync } = await import("node:fs");
+  const wav = readFileSync(path);
+  expect(wav.toString("ascii", 0, 4)).toBe("RIFF");
+  expect(wav.toString("ascii", 8, 12)).toBe("WAVE");
+  const seconds = wav.readUInt32LE(40) / (44_100 * 2 * 2);
+  expect(seconds).toBeGreaterThanOrEqual(6.4);
+  expect(seconds).toBeLessThanOrEqual(6.4 + 5);
+  let peak = 0;
+  for (let offset = 44; offset < wav.length; offset += 2) peak = Math.max(peak, Math.abs(wav.readInt16LE(offset)));
+  expect(peak).toBeGreaterThan(3_000);
+  expect(peak).toBeLessThan(32_767);
+  await expect(page.getByRole("dialog", { name: "Als WAV exportieren" })).toHaveCount(0);
+});
+
+test("teilt ein Projekt als Link und übernimmt es als neues Projekt", async ({ page }) => {
+  await page.getByRole("button", { name: "8 TAKTE" }).click();
+  await page.getByRole("button", { name: "16 TAKTE" }).click();
+  await page.getByRole("button", { name: "Link teilen" }).click();
+  const input = page.locator("input[data-share-url]");
+  await expect(input).toHaveValue(/\/Kitty\/#p=1\.[A-Za-z0-9_-]+$/);
+  const url = await input.inputValue();
+  await page.getByRole("button", { name: "Fertig" }).click();
+
+  const receiver = await page.context().newPage();
+  await receiver.goto(url);
+  const offer = receiver.getByRole("dialog", { name: "Geteiltes Projekt öffnen?" });
+  await expect(offer).toContainText("„Kitty Hybrid“");
+  await offer.getByRole("button", { name: "Als neues Projekt übernehmen" }).click();
+  await expect(receiver.locator(".kv-toast")).toContainText("Geteiltes Projekt übernommen");
+  await expect(receiver.locator(".project-name")).toHaveText("Kitty Hybrid");
+  await expect(receiver.getByRole("button", { name: "16 TAKTE" })).toHaveAttribute("aria-pressed", "true");
+  expect(new URL(receiver.url()).hash).toBe("");
+  await receiver.getByRole("button", { name: "Projekte" }).click();
+  await expect(receiver.locator(".project-list button")).toHaveCount(2);
+});

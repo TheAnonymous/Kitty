@@ -10,7 +10,7 @@ import type {
   TrackMacros,
   TransportState,
 } from "./types";
-import { SCHEMA_VERSION, TRACK_KINDS } from "./types";
+import { DEFAULT_SCENE_REPEATS, SCHEMA_VERSION, TRACK_KINDS } from "./types";
 
 export const PROFILE_DEFINITIONS: Record<GenreProfile, { label: string; description: string; tempo: number; root: ProjectV1["root"]; scale: ProjectV1["scale"] }> = {
   hard: { label: "Hard", description: "155 BPM · F-Phrygisch · druckvolle Warehouse-Patterns", tempo: 155, root: "F", scale: "phrygian" },
@@ -75,6 +75,7 @@ export function createFactoryProject(profile: GenreProfile = "hybrid"): ProjectV
               : 0.74,
     })),
     scenes,
+    sceneRepeats: DEFAULT_SCENE_REPEATS,
   };
 }
 
@@ -86,6 +87,7 @@ export function createUiState(): AppUiState {
     selectedStep: null,
     variationAmount: "lively",
     locks: Object.fromEntries(TRACK_KINDS.map((track) => [track, [false, false, false, false]])) as AppUiState["locks"],
+    sceneChain: false,
   };
 }
 

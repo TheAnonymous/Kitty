@@ -14,8 +14,10 @@ import {
   KvTooltip,
   useKvToast,
 } from "@kinky-vibes/ui";
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { ToneAudioEngine } from "./audio/engine";
+import { planSeconds, renderPlan, renderProject, type ExportMode } from "./audio/render";
+import { encodeWav, trimmedLength } from "./audio/wav";
 import StepGrid from "./components/StepGrid.vue";
 import { PROFILE_DEFINITIONS } from "./domain/defaults";
 import { DEGREE_LABELS, ROOT_LABELS, SCALE_LABELS } from "./domain/music";
@@ -31,10 +33,22 @@ import type {
   TrackKind,
   VariationAmount,
 } from "./domain/types";
-import { DRUM_VOICES, ROOT_NOTES, SCALES, TRACK_KINDS, VARIATION_AMOUNTS } from "./domain/types";
+import { DRUM_VOICES, ROOT_NOTES, SCALES, SCENE_COUNT, SCENE_REPEATS, TRACK_KINDS, VARIATION_AMOUNTS } from "./domain/types";
 import { KittyProjectRepository, MAX_PROJECTS } from "./storage";
 import { canAddDrumVoice, KittyStore, selectedPattern, selectedStep, type Action } from "./store/store";
-import { downloadText, nameFromFileName, parseProjectFile, projectFileName, requestPersistentStorage, serializeProjectFile } from "./transfer";
+import {
+  decodeShareFragment,
+  downloadBlob,
+  downloadText,
+  encodeShareFragment,
+  fileSlug,
+  nameFromFileName,
+  parseProjectFile,
+  projectFileName,
+  requestPersistentStorage,
+  serializeProjectFile,
+  type ImportedProject,
+} from "./transfer";
 
 const TRACK_LABELS: Record<TrackKind, { name: string; short: string; description: string }> = {
   drums: { name: "Drum Machine", short: "DRUMS", description: "Kick, Snare, Clap, Hats und Tom" },
@@ -74,6 +88,16 @@ const renameValue = ref(active.value.name);
 const importInput = ref<HTMLInputElement | null>(null);
 const baseUrl = import.meta.env.BASE_URL;
 const shareFeedback = ref("");
+const sharedOnPhone = ref(window.location.hash.startsWith("#p="));
+const exportDialog = ref(false);
+const exportMode = ref<"arc" | "scene">("arc");
+const exporting = ref(false);
+const exportStatus = ref("");
+const shareDialog = ref(false);
+const shareUrl = ref("");
+const shareStatus = ref("");
+const sharedDialog = ref(false);
+const sharedOffer = shallowRef<ImportedProject | null>(null);
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let audioDisposed = false;
 
@@ -90,9 +114,21 @@ const dynamicsOptions = [{ value: "ghost", label: "Leise" }, { value: "normal", 
 const lengthOptions = [{ value: "short", label: "Kurz" }, { value: "normal", label: "Normal" }, { value: "long", label: "Lang" }];
 const degreeOptions = DEGREE_LABELS.map((label, value) => ({ value, label }));
 const octaveOptions = [1, 2, 3, 4, 5].map((value) => ({ value, label: `Oktave ${value}` }));
+const arcSeconds = computed(() => planSeconds(state.value.project, renderPlan(state.value.project, { kind: "arc" })));
+const exportOptions = computed(() => {
+  const { project, ui } = state.value;
+  const bars = project.sceneRepeats * 4;
+  const loop = planSeconds(project, renderPlan(project, { kind: "scene", scene: ui.selectedScene }));
+  return [
+    { value: "arc", label: `Ganzer Bogen — alle vier Szenen nacheinander, je ${bars} Takte · ${formatDuration(arcSeconds.value)}` },
+    { value: "scene", label: `Nur „${selectedScene.value.name}“ — ${bars} Takte als Loop · ${formatDuration(loop)}` },
+  ];
+});
+const chainNextScene = computed(() => state.value.ui.sceneChain && isPlaying.value && state.value.transport.queuedScene === null ? (state.value.transport.runningScene + 1) % SCENE_COUNT : null);
 
 const unsubscribe = store.subscribe((next, action) => {
   state.value = structuredClone(next);
+  engine.setSceneChain(next.ui.sceneChain ? next.project.sceneRepeats : null);
   if (next.autosave !== "saving") return;
   engine.syncProject(next.project);
   clearTimeout(saveTimer);
@@ -100,14 +136,23 @@ const unsubscribe = store.subscribe((next, action) => {
 });
 
 const offStatus = engine.onStatus((event) => store.dispatch({ type: "transport/update", update: { status: event.status, message: event.message } }));
-const offPlayhead = engine.onPlayhead((event) => store.dispatch({ type: "transport/update", update: {
-  runningScene: event.scene,
-  queuedScene: event.switched ? null : state.value.transport.queuedScene,
-  bar: event.bar,
-  step: event.step,
-  peak: event.peak,
-  trackPeaks: event.trackPeaks,
-} }));
+const offPlayhead = engine.onPlayhead((event) => {
+  const current = store.getState();
+  // With the scene chain on, the editor follows the music when it was showing the running scene.
+  if (event.switched && current.ui.sceneChain && current.ui.selectedScene === current.transport.runningScene) {
+    store.dispatch({ type: "ui/select-scene", scene: event.scene });
+  }
+  const chain = current.ui.sceneChain && event.step === 0 ? chainMessage(event.scene, event.pass, event.chainNext) : null;
+  store.dispatch({ type: "transport/update", update: {
+    ...(chain ? { message: chain } : {}),
+    runningScene: event.scene,
+    queuedScene: event.switched ? null : store.getState().transport.queuedScene,
+    bar: event.bar,
+    step: event.step,
+    peak: event.peak,
+    trackPeaks: event.trackPeaks,
+  } });
+});
 
 const offTriggered = engine.onPlayhead((event) => {
   triggeredTracks.value = [...new Set([...triggeredTracks.value, ...event.triggeredTracks])];
@@ -141,9 +186,28 @@ function selectScene(scene: number): void {
   }
 }
 
-function currentProjectBeforeSwitch(): void {
+function flushAutosave(): void {
   clearTimeout(saveTimer);
   if (store.getState().autosave === "saving") save();
+}
+
+function chainMessage(scene: number, pass: number, next: number | null): string {
+  const { project } = store.getState();
+  const name = project.scenes[scene]?.name ?? `Szene ${scene + 1}`;
+  const following = next === null ? "" : ` → ${project.scenes[next]?.name ?? `Szene ${next + 1}`}`;
+  return `Szenenfolge · ${name} ${Math.min(pass + 1, project.sceneRepeats)}/${project.sceneRepeats}${following}`;
+}
+
+function toggleChain(): void {
+  const enabled = !state.value.ui.sceneChain;
+  dispatch({ type: "ui/scene-chain", value: enabled });
+  if (!isPlaying.value) return;
+  const running = state.value.transport.runningScene;
+  dispatch({ type: "transport/update", update: { message: enabled ? chainMessage(running, 0, (running + 1) % SCENE_COUNT) : "Wiedergabe läuft" } });
+}
+
+function currentProjectBeforeSwitch(): void {
+  flushAutosave();
   engine.stop();
   triggeredTracks.value = [];
   ducking.value = false;
@@ -180,8 +244,7 @@ function duplicateProject(): void {
 }
 
 function exportProject(): void {
-  clearTimeout(saveTimer);
-  if (store.getState().autosave === "saving") save();
+  flushAutosave();
   const fileName = projectFileName(active.value.name);
   downloadText(serializeProjectFile(active.value.name, store.getState().project), fileName);
   requestPersistentStorage();
@@ -213,6 +276,97 @@ function onDrop(event: DragEvent): void {
   event.preventDefault();
   void importFile(file);
 }
+
+function openExport(): void {
+  exportStatus.value = "";
+  exportDialog.value = true;
+}
+
+async function exportAudio(): Promise<void> {
+  if (exporting.value) return;
+  const mode: ExportMode = exportMode.value === "scene" ? { kind: "scene", scene: state.value.ui.selectedScene } : { kind: "arc" };
+  exporting.value = true;
+  const estimate = Math.max(3, Math.round(planSeconds(state.value.project, renderPlan(state.value.project, mode)) * 0.7));
+  exportStatus.value = `Wird gerendert … etwa ${estimate} Sekunden. Lass das Fenster dabei offen.`;
+  if (isPlaying.value || state.value.transport.status === "starting") engine.stop();
+  // Let the status paint before the synchronous clock pass of the offline render.
+  await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+  try {
+    flushAutosave();
+    const project = structuredClone(store.getState().project);
+    const buffer = await renderProject(project, mode, (fraction) => {
+      exportStatus.value = `Wird gerendert … ${Math.round(fraction * 100)} % von etwa ${estimate} Sekunden. Lass das Fenster dabei offen.`;
+    });
+    const musicFrames = Math.round(planSeconds(project, renderPlan(project, mode)) * buffer.sampleRate);
+    const wav = encodeWav(buffer, trimmedLength(buffer, musicFrames));
+    const suffix = mode.kind === "arc" ? "bogen" : fileSlug(project.scenes[mode.scene]?.name ?? "", "szene");
+    const fileName = `${fileSlug(active.value.name)}-${suffix}.wav`;
+    downloadBlob(new Blob([wav], { type: "audio/wav" }), fileName);
+    exportStatus.value = "";
+    exportDialog.value = false;
+    toast.toast({ title: "WAV gespeichert", description: `${fileName} liegt jetzt in deinen Downloads.`, status: "success" });
+  } catch (error) {
+    exportStatus.value = `Das hat nicht geklappt: ${errorMessage(error)}`;
+  } finally {
+    exporting.value = false;
+  }
+}
+
+async function shareLink(): Promise<void> {
+  try {
+    flushAutosave();
+    const fragment = await encodeShareFragment(active.value.name, store.getState().project);
+    shareUrl.value = `${window.location.origin}${window.location.pathname}#${fragment}`;
+    shareStatus.value = "";
+    shareDialog.value = true;
+    await copyShareUrl();
+  } catch (error) { toast.toast({ title: "Link nicht erstellt", description: errorMessage(error), status: "error" }); }
+}
+
+async function copyShareUrl(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(shareUrl.value);
+    shareStatus.value = "Link kopiert – schick ihn einfach weiter.";
+  } catch {
+    document.querySelector<HTMLInputElement>("[data-share-url] input, input[data-share-url]")?.select();
+    shareStatus.value = "Kopieren war nicht möglich. Markiere den Link und kopiere ihn mit Strg+C.";
+  }
+}
+
+async function offerSharedFragment(): Promise<void> {
+  if (!window.location.hash.startsWith("#p=")) return;
+  if (window.matchMedia("(max-width: 1023px)").matches) { sharedOnPhone.value = true; return; }
+  try {
+    const imported = await decodeShareFragment(window.location.hash);
+    if (!imported) return;
+    sharedOffer.value = imported;
+    sharedDialog.value = true;
+  } catch (error) {
+    clearShareFragment();
+    toast.toast({ title: "Geteilter Link nicht lesbar", description: errorMessage(error), status: "error" });
+  }
+}
+
+function acceptShared(): void {
+  const offer = sharedOffer.value;
+  if (!offer) return;
+  sharedOffer.value = null;
+  sharedDialog.value = false;
+  clearShareFragment();
+  try {
+    currentProjectBeforeSwitch();
+    applyProject(repository.importProject(offer.name, offer.project, projects.value), "Geteiltes Projekt übernommen");
+    requestPersistentStorage();
+  } catch (error) { toast.toast({ title: "Projekt nicht übernommen", description: errorMessage(error), status: "error" }); }
+}
+
+watch(sharedDialog, (open) => {
+  if (open || !sharedOffer.value) return;
+  sharedOffer.value = null;
+  clearShareFragment();
+});
+
+function onHashChange(): void { void offerSharedFragment(); }
 
 function renameProject(): void {
   try {
@@ -260,6 +414,15 @@ async function rememberLink(): Promise<void> {
   }
 }
 
+function clearShareFragment(): void {
+  if (window.location.hash) window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+}
+
+function formatDuration(seconds: number): string {
+  const rounded = Math.round(seconds);
+  return `${Math.floor(rounded / 60)}:${String(rounded % 60).padStart(2, "0")} min`;
+}
+
 function percent(value: number): string { return `${Math.max(0, Math.min(100, value * 100)).toFixed(2)}%`; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : "Unbekannter Fehler"; }
 function disposeAudio(): void {
@@ -273,6 +436,8 @@ onMounted(() => {
   window.addEventListener("pagehide", disposeAudio);
   window.addEventListener("dragover", onDragOver);
   window.addEventListener("drop", onDrop);
+  window.addEventListener("hashchange", onHashChange);
+  void offerSharedFragment();
   if (loaded.warning) toast.toast({ title: "Sicherung geladen", description: loaded.warning, status: "warning", duration: 8000 });
 });
 
@@ -283,6 +448,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("pagehide", disposeAudio);
   window.removeEventListener("dragover", onDragOver);
   window.removeEventListener("drop", onDrop);
+  window.removeEventListener("hashchange", onHashChange);
 });
 </script>
 
@@ -293,6 +459,7 @@ onBeforeUnmount(() => {
     <h2 id="desktop-gate-title">Kitty</h2>
     <p>Hard- und Acid-Techno mit Drum Machine, 303-Linie, Stabs, Rave-Leads und Texturen. Alle Klänge entstehen live im Browser.</p>
     <p class="desktop-gate__hint">Zum Bauen braucht Kitty ein Fenster ab 1024 Pixel Breite, also einen Laptop oder Desktop.</p>
+    <p v-if="sharedOnPhone" class="desktop-gate__shared">Jemand hat dir ein Kitty-Projekt geschickt. Öffne diesen Link am Laptop oder Desktop, dort kannst du es übernehmen.</p>
     <div class="desktop-gate__actions">
       <KvButton @click="rememberLink">Link für später merken</KvButton>
       <a class="desktop-gate__link" href="/">Zur Musik-Werkstatt</a>
@@ -363,8 +530,22 @@ onBeforeUnmount(() => {
       >
         <span>0{{ index + 1 }} · {{ scene.role.toUpperCase() }}</span>
         <strong>{{ scene.name }}</strong>
-        <small>{{ state.transport.queuedScene === index ? "NÄCHSTER TAKT" : isPlaying && state.transport.runningScene === index ? "LÄUFT" : "UMSCHALT+" + (index + 1) }}</small>
+        <small>{{ state.transport.queuedScene === index ? "NÄCHSTER TAKT" : isPlaying && state.transport.runningScene === index ? "LÄUFT" : chainNextScene === index ? "DANACH" : "UMSCHALT+" + (index + 1) }}</small>
       </button>
+    </section>
+
+    <section class="arrangement" aria-label="Szenenfolge, Export und Teilen">
+      <button type="button" class="chain-toggle" role="switch" aria-label="Szenenfolge" :aria-checked="state.ui.sceneChain" title="Spielt alle vier Szenen automatisch nacheinander" @click="toggleChain">
+        <i aria-hidden="true" />SZENENFOLGE {{ state.ui.sceneChain ? "AN" : "AUS" }}
+      </button>
+      <div class="repeat-group" role="group" aria-label="Länge jeder Szene in der Szenenfolge">
+        <button v-for="value in SCENE_REPEATS" :key="value" type="button" class="repeat-button" :aria-pressed="state.project.sceneRepeats === value" @click="dispatch({ type: 'project/scene-repeats', value })">{{ value * 4 }} TAKTE</button>
+      </div>
+      <span class="arrangement-hint">je Szene · ganzer Bogen {{ formatDuration(arcSeconds) }}</span>
+      <div class="arrangement-actions">
+        <KvButton variant="secondary" size="sm" @click="openExport">Als WAV exportieren</KvButton>
+        <KvButton variant="secondary" size="sm" @click="shareLink">Link teilen</KvButton>
+      </div>
     </section>
 
     <div class="workspace">
@@ -514,6 +695,37 @@ onBeforeUnmount(() => {
       <KvButton variant="danger" :disabled="projects.length <= 1" @click="deleteDialog = true">Löschen</KvButton>
       <KvButton variant="secondary" @click="renameProject">Umbenennen</KvButton>
       <KvButton variant="secondary" :disabled="projects.length >= MAX_PROJECTS" @click="duplicateProject">Duplizieren</KvButton>
+    </template>
+  </KvDialog>
+
+  <KvDialog v-model:open="exportDialog" title="Als WAV exportieren" description="Klingt wie die Wiedergabe und entsteht schneller als in Echtzeit. Läuft gerade Musik, wird sie dafür angehalten." close-label="Schließen">
+    <div class="dialog-stack">
+      <KvRadioGroup v-model="exportMode" label="Was soll in die Datei?" :options="exportOptions" />
+      <p class="dialog-status" data-export-status role="status">{{ exportStatus }}</p>
+    </div>
+    <template #footer>
+      <KvButton variant="secondary" :disabled="exporting" @click="exportDialog = false">Abbrechen</KvButton>
+      <KvButton :loading="exporting" data-confirm-export @click="exportAudio">WAV erstellen</KvButton>
+    </template>
+  </KvDialog>
+
+  <KvDialog v-model:open="shareDialog" title="Link teilen" :description="`Der Link enthält das ganze Projekt „${active.name}“. Er wird nirgends hochgeladen: Wer ihn öffnet, bekommt eine eigene Kopie.`" close-label="Schließen">
+    <div class="share-row">
+      <KvField label="Link"><KvInput :model-value="shareUrl" readonly data-share-url /></KvField>
+      <KvButton variant="secondary" @click="copyShareUrl">Kopieren</KvButton>
+    </div>
+    <p class="dialog-status" data-share-status role="status">{{ shareStatus }}</p>
+    <template #footer>
+      <KvButton @click="shareDialog = false">Fertig</KvButton>
+    </template>
+  </KvDialog>
+
+  <KvDialog v-model:open="sharedDialog" title="Geteiltes Projekt öffnen?" :description="sharedOffer ? `„${sharedOffer.name}“ · ${Math.round(sharedOffer.project.tempo)} BPM · ${ROOT_LABELS[sharedOffer.project.root]} ${SCALE_LABELS[sharedOffer.project.scale]}` : ''" close-label="Schließen">
+    <p class="dialog-copy">Jemand hat dir dieses Projekt geschickt. Es wird als neues Projekt in deiner Liste angelegt; deine eigenen Projekte bleiben unverändert.</p>
+    <KvAlert v-if="projects.length >= MAX_PROJECTS" status="warning" title="Alle Plätze belegt">Lösche zuerst ein Projekt und öffne den Link dann noch einmal.</KvAlert>
+    <template #footer>
+      <KvButton variant="secondary" @click="sharedDialog = false">Nicht übernehmen</KvButton>
+      <KvButton :disabled="projects.length >= MAX_PROJECTS" @click="acceptShared">Als neues Projekt übernehmen</KvButton>
     </template>
   </KvDialog>
 

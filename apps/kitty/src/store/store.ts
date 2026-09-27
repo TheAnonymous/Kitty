@@ -8,13 +8,14 @@ import type {
   ProjectV1,
   RootNote,
   Scale,
+  SceneRepeats,
   SoundPresetId,
   StepDynamics,
   StepLength,
   TrackKind,
   VariationAmount,
 } from "../domain/types";
-import { MAX_SWING, MAX_TEMPO, MIN_TEMPO, SOUND_PRESETS } from "../domain/types";
+import { MAX_SWING, MAX_TEMPO, MIN_TEMPO, SCENE_REPEATS, SOUND_PRESETS } from "../domain/types";
 
 export type Action =
   | { type: "ui/select-scene"; scene: number }
@@ -23,6 +24,7 @@ export type Action =
   | { type: "ui/select-step"; bar: number; step: number }
   | { type: "ui/toggle-lock"; bar: number }
   | { type: "ui/variation-amount"; amount: VariationAmount }
+  | { type: "ui/scene-chain"; value: boolean }
   | { type: "transport/update"; update: Partial<AppState["transport"]> }
   | { type: "autosave/status"; status: AppState["autosave"] }
   | { type: "project/tempo"; value: number }
@@ -31,6 +33,7 @@ export type Action =
   | { type: "project/swing"; value: number }
   | { type: "project/master"; value: number }
   | { type: "project/preset"; track: TrackKind; value: SoundPresetId }
+  | { type: "project/scene-repeats"; value: SceneRepeats }
   | { type: "mix/mute"; track: TrackKind }
   | { type: "mix/solo"; track: TrackKind }
   | { type: "mix/volume"; track: TrackKind; value: number }
@@ -78,7 +81,7 @@ export class KittyStore {
   replaceProject(project: ProjectV1): void {
     this.state = {
       project: sanitizeProject(project),
-      ui: createUiState(),
+      ui: { ...createUiState(), sceneChain: this.state.ui.sceneChain },
       transport: createTransportState(),
       canUndo: false,
       canRedo: false,
@@ -114,6 +117,7 @@ export class KittyStore {
       case "ui/select-step": ui.selectedBar = clamp(action.bar, 0, 3); ui.selectedStep = clamp(action.step, 0, 15); return false;
       case "ui/toggle-lock": { const bar = clamp(action.bar, 0, 3); ui.locks[ui.selectedTrack][bar] = !ui.locks[ui.selectedTrack][bar]; return false; }
       case "ui/variation-amount": ui.variationAmount = action.amount; return false;
+      case "ui/scene-chain": ui.sceneChain = action.value; return false;
       case "transport/update": Object.assign(this.state.transport, action.update); return false;
       case "autosave/status": this.state.autosave = action.status; return false;
       case "project/tempo": return assign(project, "tempo", clampNumber(action.value, MIN_TEMPO, MAX_TEMPO));
@@ -121,6 +125,7 @@ export class KittyStore {
       case "project/scale": return assign(project, "scale", action.value);
       case "project/swing": return assign(project, "swing", clampNumber(action.value, 0, MAX_SWING));
       case "project/master": return assign(project, "masterVolume", clampNumber(action.value, 0, 1));
+      case "project/scene-repeats": return SCENE_REPEATS.includes(action.value) ? assign(project, "sceneRepeats", action.value) : false;
       case "project/preset": {
         if (!(SOUND_PRESETS[action.track] as readonly string[]).includes(action.value) || project.soundPresets[action.track] === action.value) return false;
         (project.soundPresets as Record<TrackKind, SoundPresetId>)[action.track] = action.value;
