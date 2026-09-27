@@ -459,6 +459,13 @@ onBeforeUnmount(() => {
     <h2 id="desktop-gate-title">Kitty</h2>
     <p>Hard- und Acid-Techno mit Drum Machine, 303-Linie, Stabs, Rave-Leads und Texturen. Alle Klänge entstehen live im Browser.</p>
     <p class="desktop-gate__hint">Zum Bauen braucht Kitty ein Fenster ab 1024 Pixel Breite, also einen Laptop oder Desktop.</p>
+    <figure class="desktop-gate__demo">
+      <figcaption>Hörprobe · das Hybrid-Werksprojekt, alle vier Szenen mit je vier Takten</figcaption>
+      <audio controls preload="none">
+        <source :src="`${baseUrl}hoerprobe.webm`" type="audio/webm; codecs=opus">
+        <source :src="`${baseUrl}hoerprobe.mp3`" type="audio/mpeg">
+      </audio>
+    </figure>
     <p v-if="sharedOnPhone" class="desktop-gate__shared">Jemand hat dir ein Kitty-Projekt geschickt. Öffne diesen Link am Laptop oder Desktop, dort kannst du es übernehmen.</p>
     <div class="desktop-gate__actions">
       <KvButton @click="rememberLink">Link für später merken</KvButton>

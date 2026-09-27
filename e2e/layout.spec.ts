@@ -23,5 +23,12 @@ test("zeigt unterhalb der Mindestbreite eine Handy-Seite mit Rückweg", async ({
   await expect(page.locator(".kitty-shell")).toBeHidden();
   await expect(page.getByRole("link", { name: "Zur Musik-Werkstatt" })).toHaveAttribute("href", "/");
   await expect(page.getByRole("button", { name: "Link für später merken" })).toBeVisible();
+  const demo = page.locator("figure audio");
+  await expect(demo).toBeVisible();
+  for (const source of await demo.locator("source").all()) {
+    const response = await page.request.get(String(await source.evaluate((element: HTMLSourceElement) => element.src)));
+    expect(response.ok()).toBe(true);
+    expect((await response.body()).byteLength).toBeGreaterThan(100_000);
+  }
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });

@@ -16,6 +16,7 @@
   "scripts": {
     "dev": "npm run dev --workspace=@kitty/app",
     "build": "npm run build --workspace=@kitty/app",
+    "render:demo": "npm run build && node scripts/render-demo.mjs",
     "preview": "npm run preview --workspace=@kitty/app",
     "lint": "eslint .",
     "typecheck": "npm run typecheck --workspace=@kitty/app",
