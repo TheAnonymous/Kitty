@@ -89,7 +89,10 @@ Der Speicher verwaltet höchstens acht benannte Projekte. Primärstände und die
 jeweils letzte gültige Sicherung liegen unter versionierten `kitty.*.v1`-
 Schlüsseln. Fremde oder beschädigte Werte werden vor Store und Audio-Engine in
 die feste Struktur aus vier Szenen, fünf Spuren, vier Takten und 16 Steps
-rekonstruiert und geklemmt.
+rekonstruiert und geklemmt. Unter **Projekte** lässt sich das aktive Projekt als
+`.kitty.json` sichern; eine solche Datei (oder nacktes Projekt-JSON) öffnet
+Kitty über „Datei öffnen …“ oder per Drag & Drop als neues Projekt, nach
+demselben Sanitizing.
 
 ## Veröffentlichung
 
@@ -105,8 +108,8 @@ zusammen mit Groovebox und der Übersichtsseite ein Release;
 
 ## Grenzen von V1
 
-Kein Backend, Cloud-Sync, Arrangement, MIDI, Sample-Import, Audioexport,
-Projektdatei-Import/-Export oder PWA. Smartphone, Tablet, Firefox und Safari
+Kein Backend, Cloud-Sync, Arrangement, MIDI, Sample-Import, Audioexport
+oder PWA. Smartphone, Tablet, Firefox und Safari
 sind nicht Teil der verbindlichen Abnahme.
 
 Kitty steht unter der MIT-Lizenz. Herkunft und Lizenzen eingebetteter Assets

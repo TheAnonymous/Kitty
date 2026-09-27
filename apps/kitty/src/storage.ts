@@ -68,6 +68,16 @@ export class KittyProjectRepository {
     return { summary, project: duplicate, projects: next };
   }
 
+  importProject(name: string, project: ProjectV1, projects: readonly ProjectSummary[]): { summary: ProjectSummary; project: ProjectV1; projects: ProjectSummary[] } {
+    if (projects.length >= MAX_PROJECTS) throw new Error("Maximal acht Projekte sind möglich. Lösche zuerst eines.");
+    const summary = this.summary(name);
+    const imported = sanitizeProject(structuredClone(project));
+    const next = [...projects, summary];
+    this.safeSet(this.projectKey(summary.id), JSON.stringify(imported));
+    this.rotateCatalog({ schemaVersion: 1, activeId: summary.id, projects: next });
+    return { summary, project: imported, projects: next };
+  }
+
   switchTo(id: string, projects: readonly ProjectSummary[]): { summary: ProjectSummary; project: ProjectV1; projects: ProjectSummary[] } {
     const summary = projects.find((entry) => entry.id === id);
     if (!summary) throw new Error("Projekt wurde nicht gefunden.");

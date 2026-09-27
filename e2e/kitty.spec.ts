@@ -204,3 +204,17 @@ test("bedient Spuren, Szenen, Variation und Undo per Tastatur", async ({ page })
   await page.keyboard.press("r");
   await expect(page.getByRole("button", { name: /Undo/ })).toBeEnabled();
 });
+
+test("sichert ein Projekt als Datei und öffnet es als neues Projekt", async ({ page }, testInfo) => {
+  await page.getByRole("button", { name: "Projekte" }).click();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Als Datei sichern" }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("kitty-hybrid.kitty.json");
+  const path = testInfo.outputPath(file.suggestedFilename());
+  await file.saveAs(path);
+  await page.locator("[data-import-input]").setInputFiles(path);
+  await expect(page.locator(".project-name")).toHaveText("Kitty Hybrid");
+  await page.getByRole("button", { name: "Projekte" }).click();
+  await expect(page.locator(".project-list button")).toHaveCount(2);
+});

@@ -34,6 +34,7 @@ import type {
 import { DRUM_VOICES, ROOT_NOTES, SCALES, TRACK_KINDS, VARIATION_AMOUNTS } from "./domain/types";
 import { KittyProjectRepository, MAX_PROJECTS } from "./storage";
 import { canAddDrumVoice, KittyStore, selectedPattern, selectedStep, type Action } from "./store/store";
+import { downloadText, nameFromFileName, parseProjectFile, projectFileName, requestPersistentStorage, serializeProjectFile } from "./transfer";
 
 const TRACK_LABELS: Record<TrackKind, { name: string; short: string; description: string }> = {
   drums: { name: "Drum Machine", short: "DRUMS", description: "Kick, Snare, Clap, Hats und Tom" },
@@ -70,6 +71,7 @@ const acidLegato = ref(false);
 const newName = ref("Neues Set");
 const newProfile = ref<GenreProfile>("hybrid");
 const renameValue = ref(active.value.name);
+const importInput = ref<HTMLInputElement | null>(null);
 const baseUrl = import.meta.env.BASE_URL;
 const shareFeedback = ref("");
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -168,12 +170,48 @@ function createProject(): void {
     currentProjectBeforeSwitch();
     applyProject(repository.create(newName.value, newProfile.value, projects.value), `${PROFILE_DEFINITIONS[newProfile.value].label}-Projekt erstellt`);
     newDialog.value = false;
+    requestPersistentStorage();
   } catch (error) { toast.toast({ title: "Projekt konnte nicht erstellt werden", description: errorMessage(error), status: "error" }); }
 }
 
 function duplicateProject(): void {
-  try { currentProjectBeforeSwitch(); applyProject(repository.duplicate(active.value, store.getState().project, projects.value), "Projekt dupliziert"); projectsDialog.value = false; }
+  try { currentProjectBeforeSwitch(); applyProject(repository.duplicate(active.value, store.getState().project, projects.value), "Projekt dupliziert"); projectsDialog.value = false; requestPersistentStorage(); }
   catch (error) { toast.toast({ title: "Duplizieren fehlgeschlagen", description: errorMessage(error), status: "error" }); }
+}
+
+function exportProject(): void {
+  clearTimeout(saveTimer);
+  if (store.getState().autosave === "saving") save();
+  const fileName = projectFileName(active.value.name);
+  downloadText(serializeProjectFile(active.value.name, store.getState().project), fileName);
+  requestPersistentStorage();
+  toast.toast({ title: "Projektdatei gesichert", description: `${fileName} liegt jetzt in deinen Downloads.`, status: "success" });
+}
+
+async function importFile(file: File): Promise<void> {
+  if (window.matchMedia("(max-width: 1023px)").matches) return;
+  try {
+    const imported = parseProjectFile(await file.text(), nameFromFileName(file.name));
+    currentProjectBeforeSwitch();
+    applyProject(repository.importProject(imported.name, imported.project, projects.value), "Projektdatei geöffnet");
+    projectsDialog.value = false;
+    requestPersistentStorage();
+  } catch (error) { toast.toast({ title: "Datei nicht geöffnet", description: errorMessage(error), status: "error" }); }
+}
+
+function onImportInput(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (file) void importFile(file);
+}
+
+function onDragOver(event: DragEvent): void { if (event.dataTransfer?.types.includes("Files")) event.preventDefault(); }
+function onDrop(event: DragEvent): void {
+  const file = event.dataTransfer?.files[0];
+  if (!file) return;
+  event.preventDefault();
+  void importFile(file);
 }
 
 function renameProject(): void {
@@ -233,6 +271,8 @@ function disposeAudio(): void {
 onMounted(() => {
   window.addEventListener("keydown", onShortcut);
   window.addEventListener("pagehide", disposeAudio);
+  window.addEventListener("dragover", onDragOver);
+  window.addEventListener("drop", onDrop);
   if (loaded.warning) toast.toast({ title: "Sicherung geladen", description: loaded.warning, status: "warning", duration: 8000 });
 });
 
@@ -241,6 +281,8 @@ onBeforeUnmount(() => {
   unsubscribe(); offStatus(); offPlayhead(); offTriggered(); disposeAudio();
   window.removeEventListener("keydown", onShortcut);
   window.removeEventListener("pagehide", disposeAudio);
+  window.removeEventListener("dragover", onDragOver);
+  window.removeEventListener("drop", onDrop);
 });
 </script>
 
@@ -440,7 +482,7 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <footer><span>Alles läuft lokal in deinem Browser.</span><span>LEERTASTE Start/Stop · 1–5 Spuren · UMSCHALT+1–4 Szenen · V Variation · R Typisch</span></footer>
+    <footer><span>Alles läuft lokal in deinem Browser · Projekte sicherst du unter Projekte → Als Datei sichern.</span><span>LEERTASTE Start/Stop · 1–5 Spuren · UMSCHALT+1–4 Szenen · V Variation · R Typisch</span></footer>
   </main>
 
   <KvDialog v-model:open="newDialog" title="Neues Werkprojekt" description="Das Profil setzt nur dieses neue Projekt auf. Bestehende Musik bleibt unverändert." close-label="Schließen">
@@ -462,6 +504,12 @@ onBeforeUnmount(() => {
       </button>
     </div>
     <KvField label="Aktives Projekt umbenennen"><KvInput v-model="renameValue" maxlength="40" /></KvField>
+    <div class="project-file-actions">
+      <KvButton variant="secondary" size="sm" @click="exportProject">Als Datei sichern</KvButton>
+      <KvButton variant="secondary" size="sm" :disabled="projects.length >= MAX_PROJECTS" @click="importInput?.click()">Datei öffnen …</KvButton>
+      <input ref="importInput" type="file" accept=".json,application/json" data-import-input hidden @change="onImportInput">
+      <span>Projektdateien kannst du auch einfach ins Fenster ziehen.</span>
+    </div>
     <template #footer>
       <KvButton variant="danger" :disabled="projects.length <= 1" @click="deleteDialog = true">Löschen</KvButton>
       <KvButton variant="secondary" @click="renameProject">Umbenennen</KvButton>
