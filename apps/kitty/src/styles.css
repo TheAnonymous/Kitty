@@ -25,6 +25,8 @@ button { touch-action: manipulation; }
 }
 
 .desktop-gate { display: none; }
+.home-link { color: inherit; text-decoration: none; }
+.home-link:hover, .home-link:focus-visible { color: var(--kv-color-text); text-decoration: underline; text-underline-offset: 3px; }
 .eyebrow {
   margin: 0 0 3px;
   color: #c6c0b4;
@@ -74,12 +76,16 @@ button { touch-action: manipulation; }
 .save-state { min-width: 76px; color: var(--kv-color-text-muted); font-family: var(--kv-font-mono); font-size: 11px; text-align: right; }
 
 .transport-panel {
+  position: sticky;
+  z-index: 20;
+  top: 0;
   display: grid;
   grid-template-columns: auto minmax(170px, .8fr) minmax(190px, 1.2fr) 104px 164px minmax(165px, 1fr) auto;
   align-items: end;
   gap: 10px;
   padding: 10px 0;
   border-bottom: var(--kv-border);
+  background: #0b0b0c;
 }
 .transport-panel .kv-field { gap: 2px; }
 .transport-panel .kv-field__label { font-size: 10px; }
@@ -323,20 +329,26 @@ footer {
   .mixer-channel > strong, .master-channel > strong { display: none; }
 }
 
-@media (max-width: 1023px), (max-height: 719px) {
+@media (max-width: 1023px) {
   .kitty-shell { display: none; }
   .desktop-gate {
     display: grid;
+    max-width: 560px;
     min-height: 100vh;
-    place-content: center;
-    gap: 10px;
-    padding: 32px;
-    border: 8px solid var(--kv-color-signal);
-    background: #0d0d0e;
-    text-align: center;
+    align-content: center;
+    gap: 14px;
+    margin: 0 auto;
+    padding: 24px 16px 32px;
   }
-  .desktop-gate strong { font-family: var(--kv-font-display); font-size: clamp(30px, 8vw, 64px); text-transform: uppercase; }
-  .desktop-gate span { max-width: 580px; color: var(--kv-color-text-muted); }
+  .desktop-gate__art { width: 100%; height: auto; aspect-ratio: 1200 / 630; border: 2px solid var(--kv-color-signal); object-fit: cover; }
+  .desktop-gate .eyebrow { margin-top: 6px; }
+  .desktop-gate .eyebrow a { color: inherit; }
+  .desktop-gate h2 { margin: 0; font-family: var(--kv-font-display); font-size: clamp(44px, 14vw, 72px); line-height: .9; text-transform: uppercase; }
+  .desktop-gate p { margin: 0; color: var(--kv-color-text-muted); line-height: 1.6; }
+  .desktop-gate .desktop-gate__hint { color: var(--kv-color-text); }
+  .desktop-gate__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; margin-top: 6px; }
+  .desktop-gate__link { color: var(--kv-color-text); }
+  .desktop-gate__feedback { overflow-wrap: anywhere; font-size: 14px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

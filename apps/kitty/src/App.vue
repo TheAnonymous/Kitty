@@ -70,6 +70,8 @@ const acidLegato = ref(false);
 const newName = ref("Neues Set");
 const newProfile = ref<GenreProfile>("hybrid");
 const renameValue = ref(active.value.name);
+const baseUrl = import.meta.env.BASE_URL;
+const shareFeedback = ref("");
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let audioDisposed = false;
 
@@ -206,6 +208,20 @@ function onShortcut(event: KeyboardEvent): void {
   if (key === "r") { event.preventDefault(); dispatch({ type: "track/typical" }); }
 }
 
+async function rememberLink(): Promise<void> {
+  const url = window.location.href;
+  if (typeof navigator.share === "function") {
+    try { await navigator.share({ title: document.title, url }); return; }
+    catch (error) { if (error instanceof DOMException && error.name === "AbortError") return; }
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    shareFeedback.value = "Link kopiert – öffne ihn später am Laptop oder Desktop.";
+  } catch {
+    shareFeedback.value = `Dieser Link führt später wieder hierher: ${url}`;
+  }
+}
+
 function percent(value: number): string { return `${Math.max(0, Math.min(100, value * 100)).toFixed(2)}%`; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : "Unbekannter Fehler"; }
 function disposeAudio(): void {
@@ -229,17 +245,25 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="desktop-gate" role="alert">
-    <strong>Kitty braucht einen Desktop.</strong>
-    <span>Bitte öffne die Groovebox in einem aktuellen Chromium-Browser mit mindestens 1024 × 720 Pixeln.</span>
-  </div>
+  <section class="desktop-gate" aria-labelledby="desktop-gate-title">
+    <img class="desktop-gate__art" :src="`${baseUrl}kitty-social.jpg`" alt="" width="1200" height="630" loading="lazy" decoding="async">
+    <p class="eyebrow"><a href="/">Musik-Werkstatt</a> / Kitty</p>
+    <h2 id="desktop-gate-title">Kitty</h2>
+    <p>Hard- und Acid-Techno mit Drum Machine, 303-Linie, Stabs, Rave-Leads und Texturen. Alle Klänge entstehen live im Browser.</p>
+    <p class="desktop-gate__hint">Zum Bauen braucht Kitty ein Fenster ab 1024 Pixel Breite, also einen Laptop oder Desktop.</p>
+    <div class="desktop-gate__actions">
+      <KvButton @click="rememberLink">Link für später merken</KvButton>
+      <a class="desktop-gate__link" href="/">Zur Musik-Werkstatt</a>
+    </div>
+    <p v-if="shareFeedback" class="desktop-gate__feedback" role="status">{{ shareFeedback }}</p>
+  </section>
 
   <main class="kitty-shell" :data-triggered-tracks="triggeredTracks.join(',')" :data-audio-ducking="ducking ? 'active' : 'idle'" :data-acid-legato="acidLegato ? 'active' : 'idle'">
     <header class="topbar">
       <div class="brand-block">
         <span class="brand-mark" aria-hidden="true">K</span>
         <div>
-          <p class="eyebrow">HARD / ACID GROOVEBOX</p>
+          <p class="eyebrow"><a class="home-link" href="/" title="Zurück zur Musik-Werkstatt">← Musik-Werkstatt</a> · HARD / ACID GROOVEBOX</p>
           <h1>KITTY</h1>
         </div>
       </div>

@@ -15,3 +15,14 @@ test("visueller Mindest-Desktop bei 1024 × 720", async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 720 });
   await expect(page).toHaveScreenshot("kitty-1024.png", { animations: "disabled" });
 });
+
+test("visueller Laptop bei 1366 × 657", async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 657 });
+  await expect(page).toHaveScreenshot("kitty-1366.png", { animations: "disabled" });
+});
+
+test("visuelle Handy-Seite", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator(".desktop-gate__art").evaluate((image: HTMLImageElement) => image.decode());
+  await expect(page).toHaveScreenshot("kitty-phone.png", { animations: "disabled" });
+});
