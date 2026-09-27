@@ -21,6 +21,7 @@ export default defineConfig({
   },
   projects: [
     { name: "chromium", testIgnore: /audio\.spec\.ts/, use: { ...devices["Desktop Chrome"] } },
+    { name: "firefox", testMatch: /(smoke|layout)\.spec\.ts/, use: { ...devices["Desktop Firefox"] } },
     { name: "audio", testMatch: /audio\.spec\.ts/, dependencies: ["chromium"], use: { ...devices["Desktop Chrome"] } },
   ],
 });

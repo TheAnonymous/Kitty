@@ -28,10 +28,11 @@ lokale Abnahme:
 npm run verify
 ```
 
-Die Browser-Suite aktiviert den Tone.Offline-Audiotest nur auf localhost mit
-`?audio-test=1`. Vor einer Veröffentlichung folgt zusätzlich die manuelle
-**[Sound-Polish-Hörmatrix](docs/SOUND_POLISH_HEARING_MATRIX.md)**; ohne diese
-Hörfreigabe wird nicht veröffentlicht.
+Die Browser-Suite aktiviert den Offline-Audiotest nur auf localhost mit
+`?audio-test=1`; Laden, Wiedergabe, WAV-Export und Handy-Seite laufen zusätzlich
+in Firefox. Ändert sich der Klang (Engine, Presets, Mix), gehört vor die
+Veröffentlichung die **[Hörprüfung in 18 Punkten](docs/SOUND_POLISH_HEARING_MATRIX.md)**;
+verbindlich ist in jedem Fall `npm run verify`.
 
 ## Oberfläche
 
@@ -103,6 +104,10 @@ Der Audio-Mix nutzt pro Spur Eingangsfilter/EQ, lautheitskompensierte Sättigung
 Kompression und parallele vollständig-wet Delay-/Hall-Returns. Ein hörbarer
 Kick duckt Acid, Stab, Rave und Texture tempoabhängig; der Master endet nach
 Glue, Soft-Clip und Limiter in Fader und echtem dB-/Peak-Hold-Metering.
+Filter, EQ, Chorus, Vibrato und alle Stimmen sind exakte Nachbauten der
+Tone.js-Bausteine aus nativen Web-Audio-Knoten: Eine Sitzung braucht rund 500
+statt 1.640 Knoten und spielt in Chromium ohne Aussetzer; ruhende Stimmbänke
+werden bis zum nächsten Einsatz abgekoppelt. Ein Audiotest hält dieses Budget.
 
 Der Speicher verwaltet höchstens acht benannte Projekte. Primärstände und die
 jeweils letzte gültige Sicherung liegen unter versionierten `kitty.*.v1`-
@@ -128,8 +133,10 @@ zusammen mit Groovebox und der Übersichtsseite ein Release;
 ## Grenzen
 
 Kein Backend, Cloud-Sync, Sample-Import oder PWA; das Arrangement ist die feste
-Szenenfolge. Smartphone und Tablet bekommen eine Hinweisseite statt der
-Oberfläche. Firefox und Safari sind nicht Teil der verbindlichen Abnahme.
+Szenenfolge. Smartphone und Tablet bekommen eine Hinweisseite mit Hörprobe statt
+der Oberfläche. Referenzbrowser ist Chromium; Firefox läuft in der Smoke-Suite
+mit (ohne MIDI-Clock-Tests). Safari ist ungetestet: Playwrights WebKit braucht
+Ubuntu-Bibliotheken (ICU 74, libxml2.so.2, flite), die der Prüfrechner nicht hat.
 
 Kitty steht unter der MIT-Lizenz. Herkunft und Lizenzen eingebetteter Assets
 sind in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) dokumentiert.
