@@ -1,6 +1,6 @@
 # Kitty · Visual Gallery
 
-[Kitty im Browser öffnen](https://theanonymous.github.io/Kitty/) ·
+[Kitty im Browser öffnen](https://musik.jodie-oesterling.de/Kitty/) ·
 [Zurück zur Projektübersicht](../README.md)
 
 Diese textfreien Motive übersetzen Kittys musikalische Leitplanken in eine

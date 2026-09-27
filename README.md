@@ -1,19 +1,20 @@
 # Kitty
 
-[![Kitty Groovebox in einer dunklen Warehouse-Umgebung](docs/assets/kitty-hero.webp)](https://theanonymous.github.io/Kitty/)
+[![Kitty Groovebox in einer dunklen Warehouse-Umgebung](docs/assets/kitty-hero.webp)](https://musik.jodie-oesterling.de/Kitty/)
 
 Kitty ist eine anfängerfreundliche, vollständig clientseitige Hard-/Acid-
 Techno-Groovebox. Sie läuft ohne Konto, Backend, Samples oder externe Requests
 in einem aktuellen Chromium-Browser. Alle Klänge werden lokal mit Tone.js
 synthetisiert, Projekte bleiben im `localStorage` des Browsers.
 
-**[Kitty direkt im Browser öffnen](https://theanonymous.github.io/Kitty/)**
+**[Kitty direkt im Browser öffnen](https://musik.jodie-oesterling.de/Kitty/)**
 
 **[Visual Gallery und Press Kit ansehen](docs/GALLERY.md)**
 
 ## Loslegen
 
-Voraussetzungen sind exakt Node.js 24.15.0 und npm 12.0.0.
+Voraussetzungen sind exakt Node.js 24.15.0 und npm 12.0.0; beides legt
+[`mise.toml`](mise.toml) fest (`mise install`).
 
 ```bash
 npm ci
@@ -34,7 +35,7 @@ Hörfreigabe wird nicht veröffentlicht.
 
 ## Oberfläche
 
-[![Kitty mit Step-Raster, Szenen, Klangfarben und Makros](docs/assets/kitty-interface.webp)](https://theanonymous.github.io/Kitty/)
+[![Kitty mit Step-Raster, Szenen, Klangfarben und Makros](docs/assets/kitty-interface.webp)](https://musik.jodie-oesterling.de/Kitty/)
 
 ## Werkprofile
 
@@ -90,13 +91,17 @@ Schlüsseln. Fremde oder beschädigte Werte werden vor Store und Audio-Engine in
 die feste Struktur aus vier Szenen, fünf Spuren, vier Takten und 16 Steps
 rekonstruiert und geklemmt.
 
-## GitHub Pages
+## Veröffentlichung
 
-Die aktuelle Version läuft unter
-**[theanonymous.github.io/Kitty](https://theanonymous.github.io/Kitty/)**.
-Vite baut mit dem Basis-Pfad `/Kitty/`. Bei jedem Push auf `main` prüft der
-gepinnte Workflow Lint, Typen, Unit-/A11y-Tests, Build und Chromium-E2E, bevor
-er das offizielle Pages-Artefakt veröffentlicht.
+Kitty läuft unter
+**[musik.jodie-oesterling.de/Kitty](https://musik.jodie-oesterling.de/Kitty/)**
+als Teil der [Musik-Werkstatt](https://musik.jodie-oesterling.de/). Vite baut mit
+dem Basis-Pfad `/Kitty/`. Veröffentlicht wird nur ein Commit auf `main`:
+`scripts/musik-build.sh` im Repository `server-infra-nixos` exportiert ihn per
+`git archive`, führt `npm run verify` mit der gepinnten Toolchain aus und baut
+zusammen mit Groovebox und der Übersichtsseite ein Release;
+`scripts/musik-deploy.sh` schaltet es atomar um und prüft jede Datei über HTTPS,
+`scripts/musik-rollback.sh` kehrt zum vorherigen Release zurück.
 
 ## Grenzen von V1
 
