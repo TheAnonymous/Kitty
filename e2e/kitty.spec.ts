@@ -16,6 +16,8 @@ const test = base.extend({
 });
 
 test.beforeEach(async ({ page }) => {
+  // The first-visit tour has its own test; everywhere else it would cover the controls.
+  await page.addInitScript(() => localStorage.setItem("kitty.tour.v1", "done"));
   await page.goto("./");
   await page.evaluate(() => localStorage.clear());
   await page.reload();
@@ -276,4 +278,105 @@ test("teilt ein Projekt als Link und übernimmt es als neues Projekt", async ({ 
   expect(new URL(receiver.url()).hash).toBe("");
   await receiver.getByRole("button", { name: "Projekte" }).click();
   await expect(receiver.locator(".project-list button")).toHaveCount(2);
+});
+
+test("führt beim ersten Besuch durch vier Stationen und lässt sich wieder aufrufen", async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  await page.goto(String(baseURL));
+  await expect(page.getByRole("dialog", { name: "Start und Stop" })).toBeVisible();
+  await expect(page.locator(".kitty-tour__count")).toHaveText("1 / 4");
+  await page.getByRole("button", { name: "Weiter" }).click();
+  await expect(page.getByRole("dialog", { name: "Vier Szenen" })).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Spuren und Steps" })).toBeVisible();
+  await page.getByRole("button", { name: "Weiter" }).click();
+  await page.getByRole("button", { name: "Los geht's" }).click();
+  await expect(page.locator(".kitty-tour")).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("button", { name: /START/ })).toBeVisible();
+  await expect(page.locator(".kitty-tour")).toHaveCount(0);
+
+  await page.locator("body").press("?");
+  const help = page.getByRole("dialog", { name: "Hilfe und Tastenkürzel" });
+  await expect(help).toContainText("Szene wählen");
+  await help.getByRole("button", { name: "Tour starten" }).click();
+  await expect(page.locator(".kitty-tour__count")).toHaveText("1 / 4");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".kitty-tour")).toHaveCount(0);
+  await context.close();
+});
+
+test("folgt MIDI-Clock und Reglern eines Controllers", async ({ page }) => {
+  await page.addInitScript(() => {
+    const listeners: ((event: { data: Uint8Array; timeStamp: number }) => void)[] = [];
+    const input = {
+      name: "Test-Controller",
+      state: "connected",
+      set onmidimessage(handler: (event: { data: Uint8Array; timeStamp: number }) => void) { listeners.splice(0, listeners.length, handler); },
+    };
+    const access = { inputs: new Map([["in-1", input]]), onstatechange: null };
+    Object.defineProperty(navigator, "requestMIDIAccess", { configurable: true, value: async () => access });
+    (window as unknown as { __midi(bytes: number[], timeStamp?: number): void }).__midi = (bytes, timeStamp = performance.now()) => {
+      for (const listener of listeners) listener({ data: new Uint8Array(bytes), timeStamp });
+    };
+  });
+  await page.reload();
+  const send = (bytes: number[]) => page.evaluate((data) => (window as unknown as { __midi(bytes: number[]): void }).__midi(data), bytes);
+
+  await page.getByRole("button", { name: "MIDI", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "MIDI" });
+  await dialog.getByRole("button", { name: "MIDI verbinden" }).click();
+  await expect(dialog).toContainText("Test-Controller");
+  await expect(page.locator(".midi-led")).toHaveAttribute("data-state", "ready");
+
+  for (const value of [20, 60, 100, 127]) await send([0xb0, 71, value]);
+  const pressure = page.getByLabel("Druck", { exact: true });
+  await expect(pressure).toHaveValue("1");
+  await dialog.getByRole("button", { name: "Fertig" }).click();
+  await page.getByRole("button", { name: /Undo/ }).click();
+  await expect(pressure).toHaveValue("0.76");
+  await expect(page.getByRole("button", { name: /Undo/ })).toBeDisabled();
+
+  await page.getByRole("button", { name: "MIDI", exact: true }).click();
+  await dialog.getByRole("button", { name: "Zuweisen" }).first().click();
+  await expect(dialog).toContainText("Dreh jetzt einen Regler");
+  await send([0xb2, 21, 0]);
+  await expect(dialog.locator(".midi-map li").first()).toContainText("CC 21");
+
+  const interval = 60_000 / 143 / 24;
+  await page.evaluate((step) => {
+    const midi = (window as unknown as { __midi(bytes: number[], timeStamp?: number): void }).__midi;
+    for (let tick = 0; tick <= 48; tick += 1) midi([0xf8], tick * step);
+  }, interval);
+  await expect(dialog.locator(".midi-clock")).toHaveText("Clock: 143 BPM");
+  await expect(page.locator(".transport-readout")).toContainText("MIDI-Clock · 143 BPM");
+  await expect(dialog.locator(".midi-clock")).toContainText("Keine Clock", { timeout: 3_000 });
+});
+
+test("hält den Bildschirm wach, solange Musik läuft", async ({ page }) => {
+  await page.addInitScript(() => {
+    const calls: string[] = [];
+    (window as unknown as { __wakeCalls: string[] }).__wakeCalls = calls;
+    Object.defineProperty(navigator, "wakeLock", {
+      configurable: true,
+      value: { request: async (type: string) => { calls.push(`request:${type}`); return Object.assign(new EventTarget(), { release: async () => { calls.push("release"); } }); } },
+    });
+  });
+  await page.reload();
+  await page.getByRole("button", { name: /START/ }).click();
+  await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __wakeCalls: string[] }).__wakeCalls)).toEqual(["request:screen"]);
+  await page.getByRole("button", { name: /STOP/ }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __wakeCalls: string[] }).__wakeCalls)).toEqual(["request:screen", "release"]);
+});
+
+test("macht aus einem Reglerzug einen einzigen Undo-Schritt", async ({ page }) => {
+  const swing = page.getByLabel("Swing");
+  await swing.focus();
+  for (let press = 0; press < 5; press += 1) await swing.press("ArrowRight");
+  await expect(swing).toHaveValue("0.13");
+  await page.getByRole("button", { name: /Undo/ }).click();
+  await expect(swing).toHaveValue("0.08");
+  await expect(page.getByRole("button", { name: /Undo/ })).toBeDisabled();
 });

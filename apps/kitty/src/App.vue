@@ -11,6 +11,7 @@ import {
   KvRadioGroup,
   KvSelect,
   KvSlider,
+  KvSwitch,
   KvTooltip,
   useKvToast,
 } from "@kinky-vibes/ui";
@@ -18,6 +19,9 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vu
 import { ToneAudioEngine } from "./audio/engine";
 import { planSeconds, renderPlan, renderProject, type ExportMode } from "./audio/render";
 import { encodeWav, trimmedLength } from "./audio/wav";
+import { MidiLink, type MidiStatus } from "./midi";
+import { Tour, type TourStep } from "./tour";
+import { PlaybackWakeLock } from "./wake-lock";
 import StepGrid from "./components/StepGrid.vue";
 import { PROFILE_DEFINITIONS } from "./domain/defaults";
 import { DEGREE_LABELS, ROOT_LABELS, SCALE_LABELS } from "./domain/music";
@@ -33,7 +37,7 @@ import type {
   TrackKind,
   VariationAmount,
 } from "./domain/types";
-import { DRUM_VOICES, ROOT_NOTES, SCALES, SCENE_COUNT, SCENE_REPEATS, TRACK_KINDS, VARIATION_AMOUNTS } from "./domain/types";
+import { DRUM_VOICES, MACRO_KINDS, ROOT_NOTES, SCALES, SCENE_COUNT, SCENE_REPEATS, TRACK_KINDS, VARIATION_AMOUNTS } from "./domain/types";
 import { KittyProjectRepository, MAX_PROJECTS } from "./storage";
 import { canAddDrumVoice, KittyStore, selectedPattern, selectedStep, type Action } from "./store/store";
 import {
@@ -67,6 +71,22 @@ const MACRO_HINTS: Record<TrackKind, Record<MacroKind, string>> = {
   texture: { color: "Formt Rauschen und Drone von dunkel bis hell.", pressure: "Verdichtet den Hintergrund ohne Pegelsprung.", space: "Vergrößert die Hallfahne der Textur.", motion: "Belebt Übergänge mit Feedback.", density: "Gewichtet die gesetzten Texture-Impulse." },
 };
 
+const TOUR_STEPS: readonly TourStep[] = [
+  { target: ".start-button", title: "Start und Stop", text: "Mit Start oder der Leertaste läuft das Werksprojekt sofort. Alle Klänge entstehen live im Browser." },
+  { target: ".scene-strip", title: "Vier Szenen", text: "Aufwärmen, Druck, Break und Peak. Eine gewählte Szene übernimmt am nächsten Takt, der Groove reißt nicht ab." },
+  { target: ".sequencer-panel", title: "Spuren und Steps", text: "Links wählst du eine der fünf Spuren, im Raster setzt du Steps. V baut eine Variation, R ein typisches Pattern; ein Schloss schützt einen Takt." },
+  { target: ".arrangement", title: "Vom Loop zum Track", text: "Die Szenenfolge spielt alle Szenen nacheinander. Exportiere das Ergebnis als WAV oder teile es als Link. Mit ? findest du Tastenkürzel und diese Tour wieder." },
+];
+const SHORTCUTS: readonly [string[], string][] = [
+  [["Leertaste"], "Start und Stop"],
+  [["1 – 5"], "Spur wählen: Drums, Acid, Stab, Rave, FX"],
+  [["Umschalt", "1 – 4"], "Szene wählen; läuft Musik, wechselt sie am nächsten Takt"],
+  [["V"], "Variation in der gewählten Stärke"],
+  [["R"], "Typisches Pattern für Spur und Profil"],
+  [["Strg", "Z"], "Rückgängig"],
+  [["Strg", "Umschalt", "Z"], "Wiederholen"],
+  [["?"], "Diese Hilfe"],
+];
 const DRUM_LABELS: Record<DrumVoice, string> = { kick: "Kick", snare: "Snare", clap: "Clap", closedHat: "Closed Hat", openHat: "Open Hat", tom: "Tom" };
 const repository = new KittyProjectRepository();
 const loaded = repository.load();
@@ -98,6 +118,22 @@ const shareUrl = ref("");
 const shareStatus = ref("");
 const sharedDialog = ref(false);
 const sharedOffer = shallowRef<ImportedProject | null>(null);
+const helpDialog = ref(false);
+const midiDialog = ref(false);
+const midiStatus = ref<MidiStatus>({ state: MidiLink.supported() ? "off" : "unsupported", inputs: [] });
+const midiRevision = ref(0);
+const tour = new Tour(TOUR_STEPS, { storageKey: "kitty.tour.v1", className: "kitty-tour" });
+const wakeLock = new PlaybackWakeLock();
+const pendingMacros = new Map<number, number>();
+let macroFrame: number | null = null;
+const midi = new MidiLink("kitty.midi.v1", {
+  status: (status) => { midiStatus.value = status; midiRevision.value += 1; },
+  learned: () => { midiRevision.value += 1; },
+  clockTempo: (bpm) => followClockTempo(bpm),
+  start: () => void startFromMidi(),
+  stop: () => { if (isPlaying.value) engine.stop(); },
+  control: (index, value) => queueMacro(index, value),
+});
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let audioDisposed = false;
 
@@ -160,7 +196,8 @@ const offTriggered = engine.onPlayhead((event) => {
   acidLegato.value ||= event.acidLegato;
 });
 
-function dispatch(action: Action): void { store.dispatch(action); }
+/** `mergeKey` makes one slider drag or knob turn a single undo step. */
+function dispatch(action: Action, mergeKey?: string): void { store.dispatch(action, mergeKey === undefined ? {} : { mergeKey }); }
 
 function save(): void {
   try {
@@ -197,6 +234,72 @@ function chainMessage(scene: number, pass: number, next: number | null): string 
   const following = next === null ? "" : ` → ${project.scenes[next]?.name ?? `Szene ${next + 1}`}`;
   return `Szenenfolge · ${name} ${Math.min(pass + 1, project.sceneRepeats)}/${project.sceneRepeats}${following}`;
 }
+
+const midiView = computed(() => {
+  void midiRevision.value;
+  return { mapping: [...midi.mapping], learning: midi.learningIndex, followClock: midi.followClock, clock: midi.clockBpm };
+});
+
+function followClockTempo(bpm: number | null): void {
+  engine.setTempoOverride(bpm);
+  midiRevision.value += 1;
+  if (bpm !== null || isPlaying.value) dispatch({ type: "transport/update", update: { message: bpm === null ? "MIDI-Clock beendet – eigenes Tempo" : `MIDI-Clock · ${bpm} BPM` } });
+}
+
+async function startFromMidi(): Promise<void> {
+  if (isPlaying.value || state.value.transport.status === "starting") return;
+  if (navigator.userActivation && !navigator.userActivation.hasBeenActive) {
+    dispatch({ type: "transport/update", update: { message: "MIDI-Start: klick einmal in Kitty, damit der Browser Ton erlaubt" } });
+    return;
+  }
+  await engine.start(state.value.ui.selectedScene);
+}
+
+function queueMacro(index: number, value: number): void {
+  pendingMacros.set(index, value);
+  macroFrame ??= requestAnimationFrame(() => {
+    macroFrame = null;
+    for (const [macroIndex, macroValue] of pendingMacros) {
+      const macro = MACRO_KINDS[macroIndex];
+      if (macro) dispatch({ type: "track/macro", macro, value: macroValue }, `midi-${macro}`);
+    }
+    pendingMacros.clear();
+  });
+}
+
+function connectMidi(): void {
+  // The click lets the browser start audio, so a later MIDI start can play.
+  void engine.initialize();
+  void midi.connect();
+}
+
+function disconnectMidi(): void {
+  midi.disconnect();
+  followClockTempo(null);
+}
+
+function learnMacro(index: number): void {
+  midi.learn(midi.learningIndex === index ? null : index);
+  midiRevision.value += 1;
+}
+
+function setFollowClock(follow: boolean): void {
+  midi.setFollowClock(follow);
+  midiRevision.value += 1;
+}
+
+function resetMidiMapping(): void {
+  midi.resetMapping();
+  midiRevision.value += 1;
+}
+
+function startTour(): void {
+  helpDialog.value = false;
+  requestAnimationFrame(() => tour.start());
+}
+
+watch(isPlaying, (playing) => { wakeLock.playing = playing; });
+watch(midiDialog, (open) => { if (!open && midi.learningIndex !== null) learnMacro(midi.learningIndex); });
 
 function toggleChain(): void {
   const enabled = !state.value.ui.sceneChain;
@@ -388,6 +491,8 @@ function drumDisabled(voice: DrumVoice): boolean {
 
 function onShortcut(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null;
+  if (target?.closest("[role='dialog'], .kitty-tour")) return;
+  if (event.key === "?" && !target?.matches("input, select, textarea, [contenteditable='true']")) { event.preventDefault(); helpDialog.value = true; return; }
   if (target?.matches("input, select, textarea, button, [contenteditable='true']")) return;
   const key = event.key.toLowerCase();
   if ((event.ctrlKey || event.metaKey) && key === "z") { event.preventDefault(); dispatch({ type: event.shiftKey ? "history/redo" : "history/undo" }); return; }
@@ -438,6 +543,9 @@ onMounted(() => {
   window.addEventListener("drop", onDrop);
   window.addEventListener("hashchange", onHashChange);
   void offerSharedFragment();
+  void midi.restore();
+  const desktop = !window.matchMedia("(max-width: 1023px)").matches;
+  if (desktop && tour.pending && !window.location.hash.startsWith("#p=")) requestAnimationFrame(() => tour.start());
   if (loaded.warning) toast.toast({ title: "Sicherung geladen", description: loaded.warning, status: "warning", duration: 8000 });
 });
 
@@ -449,6 +557,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("dragover", onDragOver);
   window.removeEventListener("drop", onDrop);
   window.removeEventListener("hashchange", onHashChange);
+  tour.close(false);
 });
 </script>
 
@@ -491,6 +600,8 @@ onBeforeUnmount(() => {
         </span>
         <KvButton variant="secondary" size="sm" @click="projectsDialog = true">Projekte</KvButton>
         <KvButton size="sm" :disabled="projects.length >= MAX_PROJECTS" @click="newDialog = true">Neu</KvButton>
+        <button v-if="midiStatus.state !== 'unsupported'" type="button" class="head-button" title="MIDI-Controller und MIDI-Clock verbinden" @click="midiDialog = true"><i class="midi-led" :data-state="midiStatus.state" aria-hidden="true" />MIDI</button>
+        <button type="button" class="head-button" aria-label="Hilfe und Tastenkürzel" title="Hilfe und Tastenkürzel (?)" @click="helpDialog = true">?</button>
       </div>
     </header>
 
@@ -507,7 +618,7 @@ onBeforeUnmount(() => {
         <strong>{{ state.project.tempo }} BPM</strong>
       </div>
       <KvField label="Tempo" description="120–180 BPM">
-        <KvSlider :model-value="state.project.tempo" :min="120" :max="180" :step="1" @update:model-value="dispatch({ type: 'project/tempo', value: Number($event) })" />
+        <KvSlider :model-value="state.project.tempo" :min="120" :max="180" :step="1" @update:model-value="dispatch({ type: 'project/tempo', value: Number($event) }, 'tempo')" />
       </KvField>
       <KvField label="Grundton">
         <KvSelect :model-value="state.project.root" :options="rootOptions" @update:model-value="dispatch({ type: 'project/root', value: $event as RootNote })" />
@@ -516,7 +627,7 @@ onBeforeUnmount(() => {
         <KvSelect :model-value="state.project.scale" :options="scaleOptions" @update:model-value="dispatch({ type: 'project/scale', value: $event as Scale })" />
       </KvField>
       <KvField label="Swing">
-        <KvSlider :model-value="state.project.swing" :min="0" :max="0.35" :step="0.01" @update:model-value="dispatch({ type: 'project/swing', value: Number($event) })" />
+        <KvSlider :model-value="state.project.swing" :min="0" :max="0.35" :step="0.01" @update:model-value="dispatch({ type: 'project/swing', value: Number($event) }, 'swing')" />
       </KvField>
       <div class="history-buttons">
         <KvButton variant="ghost" size="sm" :disabled="!state.canUndo" @click="dispatch({ type: 'history/undo' })">↶ Undo</KvButton>
@@ -646,7 +757,7 @@ onBeforeUnmount(() => {
         <KvCard padding="sm">
           <template #header><h3>Makros</h3><span>sicher begrenzt</span></template>
           <KvField v-for="macro in (['color', 'pressure', 'space', 'motion', 'density'] as MacroKind[])" :key="macro" :label="MACRO_LABELS[macro]" :description="MACRO_HINTS[selectedTrack][macro]">
-            <KvSlider :model-value="pattern.macros[macro]" :min="0" :max="1" :step="0.01" @update:model-value="dispatch({ type: 'track/macro', macro, value: Number($event) })" />
+            <KvSlider :model-value="pattern.macros[macro]" :min="0" :max="1" :step="0.01" @update:model-value="dispatch({ type: 'track/macro', macro, value: Number($event) }, `macro-${macro}`)" />
           </KvField>
         </KvCard>
       </aside>
@@ -657,7 +768,7 @@ onBeforeUnmount(() => {
       <div v-for="track in TRACK_KINDS" :key="track" class="mixer-channel" :data-track="track">
         <strong>{{ TRACK_LABELS[track].short }}</strong>
         <div class="level-meter" :aria-label="`Pegel ${TRACK_LABELS[track].name}`" role="meter" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="Math.round(state.transport.trackPeaks[track] * 100)"><i :style="{ height: percent(state.transport.trackPeaks[track]) }" /></div>
-        <KvSlider :model-value="state.project.mix.find((entry) => entry.instrument === track)?.volume ?? 0" :min="0" :max="1" :step="0.01" :aria-label="`Lautstärke ${TRACK_LABELS[track].name}`" @update:model-value="dispatch({ type: 'mix/volume', track, value: Number($event) })" />
+        <KvSlider :model-value="state.project.mix.find((entry) => entry.instrument === track)?.volume ?? 0" :min="0" :max="1" :step="0.01" :aria-label="`Lautstärke ${TRACK_LABELS[track].name}`" @update:model-value="dispatch({ type: 'mix/volume', track, value: Number($event) }, `volume-${track}`)" />
         <div class="mix-buttons">
           <button type="button" :class="{ active: state.project.mix.find((entry) => entry.instrument === track)?.muted }" :aria-pressed="state.project.mix.find((entry) => entry.instrument === track)?.muted" @click="dispatch({ type: 'mix/mute', track })">M</button>
           <button type="button" :class="{ active: state.project.mix.find((entry) => entry.instrument === track)?.solo }" :aria-pressed="state.project.mix.find((entry) => entry.instrument === track)?.solo" @click="dispatch({ type: 'mix/solo', track })">S</button>
@@ -666,11 +777,11 @@ onBeforeUnmount(() => {
       <div class="master-channel">
         <strong>MASTER</strong>
         <div class="level-meter master" role="meter" aria-label="Masterpegel" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="Math.round(state.transport.peak * 100)"><i :style="{ height: percent(state.transport.peak) }" /></div>
-        <KvSlider :model-value="state.project.masterVolume" :min="0" :max="1" :step="0.01" aria-label="Masterlautstärke" @update:model-value="dispatch({ type: 'project/master', value: Number($event) })" />
+        <KvSlider :model-value="state.project.masterVolume" :min="0" :max="1" :step="0.01" aria-label="Masterlautstärke" @update:model-value="dispatch({ type: 'project/master', value: Number($event) }, 'master')" />
       </div>
     </section>
 
-    <footer><span>Alles läuft lokal in deinem Browser · Projekte sicherst du unter Projekte → Als Datei sichern.</span><span>LEERTASTE Start/Stop · 1–5 Spuren · UMSCHALT+1–4 Szenen · V Variation · R Typisch</span></footer>
+    <footer><span>Alles läuft lokal in deinem Browser · Projekte sicherst du unter Projekte → Als Datei sichern.</span><span>LEERTASTE Start/Stop · 1–5 Spuren · UMSCHALT+1–4 Szenen · V Variation · R Typisch · ? Hilfe</span></footer>
   </main>
 
   <KvDialog v-model:open="newDialog" title="Neues Werkprojekt" description="Das Profil setzt nur dieses neue Projekt auf. Bestehende Musik bleibt unverändert." close-label="Schließen">
@@ -733,6 +844,53 @@ onBeforeUnmount(() => {
     <template #footer>
       <KvButton variant="secondary" @click="sharedDialog = false">Nicht übernehmen</KvButton>
       <KvButton :disabled="projects.length >= MAX_PROJECTS" @click="acceptShared">Als neues Projekt übernehmen</KvButton>
+    </template>
+  </KvDialog>
+
+  <KvDialog v-model:open="helpDialog" title="Hilfe und Tastenkürzel" description="Die Kürzel wirken, solange kein Eingabefeld oder Button den Fokus hat." close-label="Schließen">
+    <dl class="shortcut-list">
+      <div v-for="[keys, meaning] in SHORTCUTS" :key="meaning">
+        <dt><template v-for="(key, index) in keys" :key="key"><template v-if="index > 0"> + </template><kbd>{{ key }}</kbd></template></dt>
+        <dd>{{ meaning }}</dd>
+      </div>
+    </dl>
+    <template #footer>
+      <KvButton variant="secondary" @click="startTour">Tour starten</KvButton>
+      <KvButton @click="helpDialog = false">Fertig</KvButton>
+    </template>
+  </KvDialog>
+
+  <KvDialog v-model:open="midiDialog" title="MIDI" description="Ein Controller dreht an den Makros, eine andere App oder ein Gerät gibt mit seiner MIDI-Clock Tempo, Start und Stop vor." close-label="Schließen">
+    <div class="midi-panel" data-midi-body>
+      <template v-if="midiStatus.state === 'connecting'">
+        <p role="status">Verbinde … Bestätige die Nachfrage des Browsers.</p>
+      </template>
+      <template v-else-if="midiStatus.state !== 'ready'">
+        <p>Kitty hört nur zu: Clock und Regler werden gelesen, gesendet wird nichts.</p>
+        <KvAlert v-if="midiStatus.state === 'denied'" status="warning" title="MIDI abgelehnt">Erlaube MIDI in den Website-Einstellungen und versuche es noch einmal.</KvAlert>
+        <KvAlert v-if="midiStatus.state === 'error'" status="error" title="MIDI ließ sich nicht öffnen">Steck das Gerät neu ein und versuche es noch einmal.</KvAlert>
+        <KvButton @click="connectMidi">MIDI verbinden</KvButton>
+      </template>
+      <template v-else>
+        <p><strong>Eingänge:</strong> {{ midiStatus.inputs.length > 0 ? midiStatus.inputs.join(", ") : "Noch kein Gerät. Steck einen Controller an, er erscheint hier von selbst." }}</p>
+        <KvSwitch :model-value="midiView.followClock" label="Tempo, Start und Stop folgen der MIDI-Clock" @update:model-value="setFollowClock(Boolean($event))" />
+        <p class="midi-clock" role="status">{{ !midiView.followClock ? "Die Clock wird ignoriert." : midiView.clock === null ? "Keine Clock – Kitty spielt im eigenen Tempo." : `Clock: ${midiView.clock} BPM` }}</p>
+        <h3>Regler → Makros der gewählten Spur</h3>
+        <ul class="midi-map">
+          <li v-for="(macro, index) in MACRO_KINDS" :key="macro">
+            <span>{{ MACRO_LABELS[macro] }}</span>
+            <output>{{ midiView.learning === index ? "Dreh jetzt einen Regler …" : (midiView.mapping[index] ?? -1) >= 0 ? `CC ${midiView.mapping[index]}` : "nicht zugewiesen" }}</output>
+            <KvButton variant="secondary" size="sm" :aria-pressed="midiView.learning === index" @click="learnMacro(index)">{{ midiView.learning === index ? "Abbrechen" : "Zuweisen" }}</KvButton>
+          </li>
+        </ul>
+        <div class="midi-actions">
+          <KvButton variant="ghost" size="sm" @click="resetMidiMapping">CC 70–74 wiederherstellen</KvButton>
+          <KvButton variant="ghost" size="sm" @click="disconnectMidi">MIDI trennen</KvButton>
+        </div>
+      </template>
+    </div>
+    <template #footer>
+      <KvButton @click="midiDialog = false">Fertig</KvButton>
     </template>
   </KvDialog>
 

@@ -77,6 +77,16 @@ geschickt, und wer den Link öffnet, übernimmt eine eigene Kopie.
 - `Strg/Cmd+Z`, `Strg/Cmd+Umschalt+Z` oder `Strg/Cmd+Y`: Undo/Redo
 - Klick oder Enter: vorhandenen Step auswählen, freien Step aktivieren
 - `Step ausschalten`: den im Detailbereich ausgewählten Step entfernen
+- `?`: Hilfe mit allen Tastenkürzeln und der Einführungstour
+
+Beim ersten Besuch führt eine kurze Tour durch Start, Szenen, Spuren und
+Szenenfolge. Ein Zug an einem Regler ist ein einziger Undo-Schritt. Solange
+Musik läuft, bleibt der Bildschirm an.
+
+**MIDI** (Chrome, Edge; Firefox nach Nachfrage): Kitty hört nur zu. Eine
+MIDI-Clock gibt Tempo, Start und Stop vor, ohne das Tempo des Projekts zu
+ändern; die Regler CC 70–74 steuern Farbe, Druck, Raum, Bewegung und Dichte der
+gewählten Spur, jeder Regler lässt sich im MIDI-Dialog neu zuweisen.
 
 Die Profile Hard, Acid und Hybrid werden ausschließlich beim bewussten
 Erstellen eines neuen Projekts angewendet. Spätere Änderungen an Tempo,

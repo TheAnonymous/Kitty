@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
+  // The first-visit tour has its own test; everywhere else it would cover the controls.
+  await page.addInitScript(() => localStorage.setItem("kitty.tour.v1", "done"));
   await page.goto("./");
   await page.evaluate(() => localStorage.clear());
   await page.reload();

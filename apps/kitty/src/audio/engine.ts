@@ -88,6 +88,7 @@ export class ToneAudioEngine {
   private readonly banks = new Map<string, VoiceBank>();
   private activePresets: Partial<Record<TrackKind, SoundPresetId>> = {};
   private appliedTempo: number | null = null;
+  private tempoOverride: number | null = null;
   private appliedSwing: number | null = null;
   private appliedMasterVolume: number | null = null;
   private scheduleId: number | null = null;
@@ -155,6 +156,14 @@ export class ToneAudioEngine {
   queueScene(scene: number): number | null { return this.clock.queue(scene); }
 
   setSceneChain(repeats: number | null): void { this.clock.setChain(repeats); }
+
+  /** An external MIDI clock's tempo replaces the project tempo until `null`; the project keeps its own. */
+  setTempoOverride(bpm: number | null): void {
+    this.tempoOverride = bpm === null ? null : Math.max(40, Math.min(240, bpm));
+    if (this.initialized) this.applyProject();
+  }
+
+  private get tempo(): number { return this.tempoOverride ?? this.project.tempo; }
 
   /** Builds the full signal path in the current (offline) context and schedules `plan` on its transport. */
   async scheduleOffline(plan: RenderPlan): Promise<void> {
@@ -228,9 +237,9 @@ export class ToneAudioEngine {
 
   private applyProject(): void {
     const transport = Tone.getTransport();
-    if (this.appliedTempo !== this.project.tempo) {
-      transport.bpm.rampTo(this.project.tempo, 0.08);
-      this.appliedTempo = this.project.tempo;
+    if (this.appliedTempo !== this.tempo) {
+      transport.bpm.rampTo(this.tempo, 0.08);
+      this.appliedTempo = this.tempo;
     }
     if (this.appliedSwing !== this.project.swing) {
       transport.swing = this.project.swing;
@@ -297,7 +306,7 @@ export class ToneAudioEngine {
     const bank = this.bankFor(track);
     const legato = track === "acid" ? acidLegatoContext(pattern.bars, position.bar, position.step) : { legato: false, continues: false };
     const context: TriggerContext = {
-      tempo: this.project.tempo,
+      tempo: this.tempo,
       scene: position.scene,
       bar: position.bar,
       step: position.step,
@@ -350,7 +359,7 @@ export class ToneAudioEngine {
       if (track === "drums") continue;
       const gain = this.strips?.[track].duck.gain;
       if (!gain) continue;
-      const envelope = duckEnvelope(track, this.project.tempo);
+      const envelope = duckEnvelope(track, this.tempo);
       gain.cancelAndHoldAtTime(time);
       gain.linearRampToValueAtTime(envelope.gain, time + envelope.attack);
       gain.setValueAtTime(envelope.gain, time + envelope.attack + envelope.hold);

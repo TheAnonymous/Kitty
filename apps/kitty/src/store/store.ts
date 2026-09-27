@@ -53,12 +53,14 @@ export type Action =
 
 export type StoreListener = (state: AppState, action: Action) => void;
 const HISTORY_LIMIT = 100;
+const MERGE_WINDOW_MS = 1_200;
 
 export class KittyStore {
   private state: AppState;
   private readonly listeners = new Set<StoreListener>();
   private undoStack: ProjectV1[] = [];
   private redoStack: ProjectV1[] = [];
+  private lastMerge: { key: string; at: number } | null = null;
 
   constructor(project: ProjectV1) {
     this.state = {
@@ -79,6 +81,7 @@ export class KittyStore {
   }
 
   replaceProject(project: ProjectV1): void {
+    this.lastMerge = null;
     this.state = {
       project: sanitizeProject(project),
       ui: { ...createUiState(), sceneChain: this.state.ui.sceneChain },
@@ -92,13 +95,20 @@ export class KittyStore {
     this.emit({ type: "autosave/status", status: "ready" });
   }
 
-  dispatch(action: Action): void {
+  /**
+   * `mergeKey` folds a stream of changes (a MIDI knob turning) into one undo
+   * step while the same key keeps arriving within a moment.
+   */
+  dispatch(action: Action, options: { mergeKey?: string } = {}): void {
     if (action.type === "history/undo") return this.undo(action);
     if (action.type === "history/redo") return this.redo(action);
     const before = structuredClone(this.state.project);
     const changed = this.reduce(action);
     if (changed) {
-      this.undoStack.push(before);
+      const now = Date.now();
+      const merged = options.mergeKey !== undefined && this.lastMerge?.key === options.mergeKey && now - this.lastMerge.at < MERGE_WINDOW_MS;
+      this.lastMerge = options.mergeKey === undefined ? null : { key: options.mergeKey, at: now };
+      if (!merged) this.undoStack.push(before);
       if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
       this.redoStack = [];
       this.state.canUndo = true;
@@ -177,6 +187,7 @@ export class KittyStore {
   }
 
   private undo(action: Action): void {
+    this.lastMerge = null;
     const previous = this.undoStack.pop();
     if (!previous) return;
     this.redoStack.push(structuredClone(this.state.project));
@@ -188,6 +199,7 @@ export class KittyStore {
   }
 
   private redo(action: Action): void {
+    this.lastMerge = null;
     const next = this.redoStack.pop();
     if (!next) return;
     this.undoStack.push(structuredClone(this.state.project));
