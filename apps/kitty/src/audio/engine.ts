@@ -25,6 +25,8 @@ import {
   setTrackGraphVolume,
   type TrackGraph,
 } from "./graph";
+import { LeanChorus, LeanFilter, LeanStereoWidener, LeanVibrato, SleepyOutput } from "./lean";
+import { DetuneSource, FmVoice, LeanEnvelope, LeanTone, NoiseVoice, OneShotTone, type BasicWave, type ToneSpec } from "./lean-voices";
 import { BarQueuedTransport, type SequencerPosition } from "./transport";
 
 export interface AudioStatusEvent { status: "idle" | "starting" | "playing" | "suspended" | "error"; message: string; }
@@ -56,6 +58,16 @@ interface TriggerContext {
   continuesLegato: boolean;
 }
 
+/** Silence margin after a bank's envelopes have released before it is disconnected. */
+const SLEEP_MARGIN_SECONDS = 0.5;
+/** Longest drum decay (sub tail 0.68 s + release 0.32 s) plus margin. */
+const DRUM_TAIL_SECONDS = 1.5;
+
+export interface EngineOptions {
+  /** Renders inside an offline context: no context-state checks, meters, draw callbacks or sleeping banks. */
+  offline?: boolean;
+}
+
 export const VOICE_LIMITS: Record<TrackKind, number> = { drums: 6, acid: 1, stab: 4, rave: 5, texture: 2 };
 
 export class ToneAudioEngine {
@@ -80,7 +92,7 @@ export class ToneAudioEngine {
   private readonly playheadListeners = new Set<(event: PlayheadEvent) => void>();
   private readonly statusListeners = new Set<(event: AudioStatusEvent) => void>();
 
-  constructor(project: ProjectV1) { this.project = structuredClone(project); }
+  constructor(project: ProjectV1, private readonly options: EngineOptions = {}) { this.project = structuredClone(project); }
 
   async initialize(): Promise<void> {
     this.emitStatus("starting", "Audio wird vorbereitet …");
@@ -125,6 +137,12 @@ export class ToneAudioEngine {
     this.peak = 0;
     this.trackPeaks = zeroPeaks();
     if (emit) this.emitStatus("idle", "Gestoppt");
+  }
+
+  /** Test hook: builds the graph and the voice banks of the current presets, as a playing session would. */
+  async prepareAllVoices(): Promise<void> {
+    if (!this.initialized) await this.createGraph();
+    for (const track of TRACK_KINDS) this.bankFor(track);
   }
 
   queueScene(scene: number): number | null { return this.clock.queue(scene); }
@@ -280,7 +298,7 @@ export class ToneAudioEngine {
     if (existing) return existing;
     const destination = this.strips?.[track].input;
     if (!destination) throw new Error("Audio-Signalweg ist nicht initialisiert");
-    const bank = createVoiceBank(track, preset, destination);
+    const bank = createVoiceBank(track, preset, destination, this.options.offline ?? false);
     this.banks.set(key, bank);
     return bank;
   }
@@ -325,65 +343,61 @@ export class ToneAudioEngine {
   private emitStatus(status: AudioStatusEvent["status"], message: string): void { for (const listener of this.statusListeners) listener({ status, message }); }
 }
 
-function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneAudioNode): VoiceBank {
+function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneAudioNode, alwaysAwake: boolean): VoiceBank {
   const definition = presetDefinition("drums", preset);
   const recipe = definition.synthesis;
-  const output = new Tone.Gain(definition.level).connect(destination);
-  const snareFilter = new Tone.Filter({ type: "highpass", frequency: recipe.snare.highpass, rolloff: -12 });
+  const output = new Tone.Gain(definition.level);
+  const sleep = new SleepyOutput(output, destination, alwaysAwake);
+  const snareFilter = new LeanFilter({ type: "highpass", frequency: recipe.snare.highpass, rolloff: -12 });
   const panScale = preset === "steel" ? 2.15 : preset === "rumble" ? 0.42 : 1;
   const snarePan = new Tone.Panner(-0.08 * panScale).connect(output);
   snareFilter.connect(snarePan);
-  const clapFilter = new Tone.Filter({ type: "highpass", frequency: recipe.clap.highpass, rolloff: -24 });
+  const clapFilter = new LeanFilter({ type: "highpass", frequency: recipe.clap.highpass, rolloff: -24 });
   const clapPan = new Tone.Panner(0.17 * panScale).connect(output);
   clapFilter.connect(clapPan);
-  const closedHatFilter = new Tone.Filter({ type: "highpass", frequency: recipe.hats.closedHighpass, rolloff: -24 });
+  const closedHatFilter = new LeanFilter({ type: "highpass", frequency: recipe.hats.closedHighpass, rolloff: -24 });
   const closedHatPan = new Tone.Panner(-0.23 * panScale).connect(output);
   closedHatFilter.connect(closedHatPan);
-  const openHatFilter = new Tone.Filter({ type: "highpass", frequency: recipe.hats.openHighpass, rolloff: -24 });
+  const openHatFilter = new LeanFilter({ type: "highpass", frequency: recipe.hats.openHighpass, rolloff: -24 });
   const openHatPan = new Tone.Panner(0.27 * panScale).connect(output);
   openHatFilter.connect(openHatPan);
-  const tomFilter = new Tone.Filter({ type: "lowpass", frequency: recipe.tom.lowpass, rolloff: -12 });
+  const tomFilter = new LeanFilter({ type: "lowpass", frequency: recipe.tom.lowpass, rolloff: -12 });
   const tomPan = new Tone.Panner(-0.12 * panScale).connect(output);
   tomFilter.connect(tomPan);
-  const kick = new Tone.MembraneSynth({
-    pitchDecay: recipe.kick.pitchDecay,
-    octaves: recipe.kick.octaves,
-    oscillator: { type: recipe.kick.oscillator },
-    envelope: { ...definition.envelope, sustain: 0.01 },
+  // Tone.MembraneSynth: exponential attack, pitch falling from f·2^octaves to f.
+  const kick = new OneShotTone({ kind: "basic", type: recipe.kick.oscillator as BasicWave }, {
+    pitch: { octaves: recipe.kick.octaves, pitchDecay: recipe.kick.pitchDecay },
+    envelope: { ...definition.envelope, sustain: 0.01, attackCurve: "exponential" },
   }).connect(output);
-  const snareBody = new Tone.MembraneSynth({
-    pitchDecay: 0.022,
-    octaves: 2.6,
-    oscillator: { type: "triangle" },
-    envelope: { attack: 0.001, decay: recipe.snare.bodyDecay, sustain: 0, release: 0.09 },
+  const snareBody = new OneShotTone({ kind: "basic", type: "triangle" }, {
+    pitch: { octaves: 2.6, pitchDecay: 0.022 },
+    envelope: { attack: 0.001, decay: recipe.snare.bodyDecay, sustain: 0, release: 0.09, attackCurve: "exponential" },
   }).connect(snareFilter);
-  const tom = new Tone.MembraneSynth({
-    pitchDecay: 0.032,
-    octaves: 2.4,
-    oscillator: { type: "triangle" },
-    envelope: { attack: 0.001, decay: recipe.tom.decay, sustain: 0, release: 0.13 },
+  const tom = new OneShotTone({ kind: "basic", type: "triangle" }, {
+    pitch: { octaves: 2.4, pitchDecay: 0.032 },
+    envelope: { attack: 0.001, decay: recipe.tom.decay, sustain: 0, release: 0.13, attackCurve: "exponential" },
   }).connect(tomFilter);
   // One shared synthetic noise source feeds independent envelopes. This keeps
   // the six drum identities and overlapping clap/hat transients without
   // running a separate full-band source for every layer.
   const drumNoise = new Tone.Noise(recipe.snare.noise).start();
-  const snareNoise = new Tone.AmplitudeEnvelope({ attack: 0.001, decay: recipe.snare.decay, sustain: 0, release: 0.07 }).connect(snareFilter);
-  const clapNoises = Array.from({ length: 3 }, () => new Tone.AmplitudeEnvelope({ attack: 0.001, decay: recipe.clap.decay, sustain: 0, release: 0.04 }).connect(clapFilter));
-  const closedHat = new Tone.AmplitudeEnvelope({ attack: 0.001, decay: recipe.hats.closedDecay, sustain: 0, release: Math.max(0.025, recipe.hats.closedDecay * 0.45) }).connect(closedHatFilter);
-  const openHat = new Tone.AmplitudeEnvelope({ attack: 0.001, decay: recipe.hats.openDecay, sustain: 0, release: Math.max(0.025, recipe.hats.openDecay * 0.45) }).connect(openHatFilter);
+  const snareNoise = new LeanEnvelope({ attack: 0.001, decay: recipe.snare.decay, sustain: 0, release: 0.07 }).connect(snareFilter);
+  const clapNoises = Array.from({ length: 3 }, () => new LeanEnvelope({ attack: 0.001, decay: recipe.clap.decay, sustain: 0, release: 0.04 }).connect(clapFilter));
+  const closedHat = new LeanEnvelope({ attack: 0.001, decay: recipe.hats.closedDecay, sustain: 0, release: Math.max(0.025, recipe.hats.closedDecay * 0.45) }).connect(closedHatFilter);
+  const openHat = new LeanEnvelope({ attack: 0.001, decay: recipe.hats.openDecay, sustain: 0, release: Math.max(0.025, recipe.hats.openDecay * 0.45) }).connect(openHatFilter);
   drumNoise.fan(snareNoise, ...clapNoises, closedHat, openHat);
-  const triggerHat = (hat: Tone.AmplitudeEnvelope, noteLength: Tone.Unit.Time, time: number, velocity: number) => {
-    hat.triggerAttackRelease(noteLength, time, velocity);
+  const triggerHat = (hat: LeanEnvelope, noteLength: Tone.Unit.Time, time: number, velocity: number) => {
+    hat.triggerAttackRelease(Tone.Time(noteLength).toSeconds(), time, velocity);
   };
   const transient = recipe.kick.transient > 0
-    ? new Tone.AmplitudeEnvelope({ attack: 0.0005, decay: 0.018, sustain: 0, release: 0.012 }).connect(output)
+    ? new LeanEnvelope({ attack: 0.0005, decay: 0.018, sustain: 0, release: 0.012 }).connect(output)
     : null;
   if (transient) drumNoise.connect(transient);
   const subHighpass = recipe.kick.subTail
-    ? new Tone.Filter({ type: "highpass", frequency: 40, rolloff: -24 })
+    ? new LeanFilter({ type: "highpass", frequency: 40, rolloff: -24 })
     : null;
   const subFilter = recipe.kick.subTail && subHighpass
-    ? new Tone.Filter({ type: "lowpass", frequency: recipe.kick.subTail.cutoff, rolloff: -24 })
+    ? new LeanFilter({ type: "lowpass", frequency: recipe.kick.subTail.cutoff, rolloff: -24 })
     : null;
   const subSaturator = recipe.kick.subTail && subFilter
     ? new CharacterSaturator("density")
@@ -393,7 +407,10 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneA
     subSaturator.setAmount(0.19, 0.001);
   }
   const subTail = recipe.kick.subTail && subHighpass
-    ? new Tone.MembraneSynth({ pitchDecay: 0.018, octaves: 1.6, oscillator: { type: "triangle" }, envelope: { attack: 0.003, decay: recipe.kick.subTail.decay, sustain: 0, release: recipe.kick.subTail.release } }).connect(subHighpass)
+    ? new OneShotTone({ kind: "basic", type: "triangle" }, {
+        pitch: { octaves: 1.6, pitchDecay: 0.018 },
+        envelope: { attack: 0.003, decay: recipe.kick.subTail.decay, sustain: 0, release: recipe.kick.subTail.release, attackCurve: "exponential" },
+      }).connect(subHighpass)
     : null;
   const nodes: Tone.ToneAudioNode[] = [kick, snareBody, tom, drumNoise, snareNoise, ...clapNoises, closedHat, openHat, snareFilter, snarePan, clapFilter, clapPan, closedHatFilter, closedHatPan, openHatFilter, openHatPan, tomFilter, tomPan, output];
   if (transient) nodes.push(transient);
@@ -401,20 +418,21 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneA
   const trigger = (voice: DrumVoice, step: Step, time: number, velocity: number) => {
     const voiceTime = time + performanceOffsetSeconds("drums", voice);
     if (voice === "kick") {
-      kick.triggerAttackRelease(recipe.kick.note, step.length === "long" ? "8n" : "16n", voiceTime, velocity * recipe.kick.velocity);
+      kick.triggerAttackRelease(hertz(recipe.kick.note), seconds(step.length === "long" ? "8n" : "16n"), voiceTime, velocity * recipe.kick.velocity);
       transient?.triggerAttackRelease(0.018, voiceTime, velocity * recipe.kick.transient);
-      if (subTail && recipe.kick.subTail) subTail.triggerAttackRelease(recipe.kick.subTail.note, recipe.kick.subTail.decay, voiceTime + 0.018, velocity * recipe.kick.subTail.level);
+      if (subTail && recipe.kick.subTail) subTail.triggerAttackRelease(hertz(recipe.kick.subTail.note), recipe.kick.subTail.decay, voiceTime + 0.018, velocity * recipe.kick.subTail.level);
     } else if (voice === "snare") {
       snareNoise.triggerAttackRelease(recipe.snare.decay, voiceTime, velocity * recipe.snare.noiseLevel);
-      snareBody.triggerAttackRelease(recipe.snare.bodyNote, "32n", voiceTime, velocity * recipe.snare.bodyLevel);
+      snareBody.triggerAttackRelease(hertz(recipe.snare.bodyNote), seconds("32n"), voiceTime, velocity * recipe.snare.bodyLevel);
     } else if (voice === "clap") {
       [0, recipe.clap.spacing, recipe.clap.spacing * 2].forEach((offset, index) => clapNoises[index]!.triggerAttackRelease(recipe.clap.decay, voiceTime + offset, velocity * recipe.clap.level * (1 - index * 0.14)));
     } else if (voice === "closedHat") triggerHat(closedHat, "32n", voiceTime, velocity * recipe.hats.level);
     else if (voice === "openHat") triggerHat(openHat, "8n", voiceTime, velocity * recipe.hats.level * 0.82);
-    else tom.triggerAttackRelease(recipe.tom.note, "8n", voiceTime, velocity * recipe.tom.level);
+    else tom.triggerAttackRelease(hertz(recipe.tom.note), seconds("8n"), voiceTime, velocity * recipe.tom.level);
   };
   return {
     trigger: (_notes, step, time, velocity) => {
+      sleep.wake(time, time + DRUM_TAIL_SECONDS);
       const layerGain = 1 / Math.sqrt(Math.max(1, step.drumVoices.length));
       step.drumVoices.forEach((voice) => {
         try {
@@ -429,18 +447,19 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneA
       closedHat.triggerRelease(time);
       openHat.triggerRelease(time);
     },
-    dispose: () => nodes.forEach((node) => node.dispose()),
+    dispose: () => { sleep.dispose(); nodes.forEach((node) => node.dispose()); },
   };
 }
 
-function createAcidBank(preset: SoundPresetMap["acid"], destination: Tone.ToneAudioNode): VoiceBank {
+function createAcidBank(preset: SoundPresetMap["acid"], destination: Tone.ToneAudioNode, alwaysAwake: boolean): VoiceBank {
   const definition = presetDefinition("acid", preset);
   const recipe = definition.synthesis;
-  const output = new Tone.Gain(definition.level).connect(destination);
-  const ampEnvelope = new Tone.AmplitudeEnvelope(definition.envelope).connect(output);
+  const output = new Tone.Gain(definition.level);
+  const sleep = new SleepyOutput(output, destination, alwaysAwake);
+  const ampEnvelope = new LeanEnvelope(definition.envelope).connect(output);
   const voiceDrive = new CharacterSaturator(definition.channel.saturationCurve);
   voiceDrive.connect(ampEnvelope);
-  const filter = new Tone.Filter({ type: "lowpass", frequency: recipe.filterBase, Q: recipe.filterQ, rolloff: -24 }).connect(voiceDrive);
+  const filter = new LeanFilter({ type: "lowpass", frequency: recipe.filterBase, Q: recipe.filterQ, rolloff: -24 }).connect(voiceDrive);
   const filterEnvelope = new Tone.FrequencyEnvelope({
     attack: 0.002,
     decay: recipe.filterDecay,
@@ -449,11 +468,14 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: Tone.ToneAu
     baseFrequency: recipe.filterBase,
     octaves: recipe.filterOctaves,
     exponent: 2.35,
-  }).connect(filter.frequency);
-  const oscillator = new Tone.Oscillator({ frequency: 110, type: recipe.oscillator }).connect(filter).start();
+  });
+  filter.modulateFrequency(filterEnvelope);
+  const oscillator = new LeanTone(output.context, { kind: "basic", type: recipe.oscillator }, 110).start(output.context.currentTime);
+  oscillator.output.connect(filter.input);
   let active = false;
   return {
     trigger: (notes, step, time, velocity, macros, context) => {
+      sleep.wake(time, time + stepDurationSeconds(step.length, context.tempo) + definition.envelope.release + SLEEP_MARGIN_SECONDS);
       const note = notes[0];
       if (note === undefined) return;
       const accent = step.dynamics === "accent";
@@ -487,17 +509,28 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: Tone.ToneAu
       filterEnvelope.triggerRelease(time);
       active = false;
     },
-    dispose: () => [oscillator, filterEnvelope, filter, voiceDrive, ampEnvelope, output].forEach((node) => node.dispose()),
+    dispose: () => {
+      sleep.dispose();
+      oscillator.stop(output.context.currentTime);
+      oscillator.dispose();
+      [filterEnvelope, filter, voiceDrive, ampEnvelope, output].forEach((node) => node.dispose());
+    },
   };
 }
 
-type MelodicVoice = Tone.Synth | Tone.FMSynth;
+/** Lean Tone.Synth / Tone.FMSynth equivalents; both keep a persistent detune signal. */
+type MelodicVoice = (OneShotTone & { readonly detune: DetuneSource }) | FmVoice;
 
-function createStabBank(preset: SoundPresetMap["stab"], destination: Tone.ToneAudioNode): VoiceBank {
+function analogVoice(spec: ToneSpec, envelope: { attack: number; decay: number; sustain: number; release: number }): MelodicVoice {
+  return new OneShotTone(spec, { envelope, detune: true }) as MelodicVoice;
+}
+
+function createStabBank(preset: SoundPresetMap["stab"], destination: Tone.ToneAudioNode, alwaysAwake: boolean): VoiceBank {
   const definition = presetDefinition("stab", preset);
   const recipe = definition.synthesis;
-  const output = new Tone.Gain(definition.level).connect(destination);
-  const voiceFilter = new Tone.Filter({ type: "lowpass", frequency: definition.voiceFilter.base, Q: definition.voiceFilter.q, rolloff: -24 }).connect(output);
+  const output = new Tone.Gain(definition.level);
+  const sleep = new SleepyOutput(output, destination, alwaysAwake);
+  const voiceFilter = new LeanFilter({ type: "lowpass", frequency: definition.voiceFilter.base, Q: definition.voiceFilter.q, rolloff: -24 }).connect(output);
   const filterEnvelope = new Tone.FrequencyEnvelope({
     attack: definition.voiceFilter.attack,
     decay: definition.voiceFilter.decay,
@@ -506,29 +539,28 @@ function createStabBank(preset: SoundPresetMap["stab"], destination: Tone.ToneAu
     baseFrequency: definition.voiceFilter.base,
     octaves: definition.voiceFilter.octaves,
     exponent: 2.1,
-  }).connect(voiceFilter.frequency);
+  });
+  voiceFilter.modulateFrequency(filterEnvelope);
   const voiceCount = preset === "chord" ? 4 : 3;
   const panPositions = preset === "chord" ? [-0.44, 0.18, -0.12, 0.46] : preset === "flash" ? [-0.32, 0, 0.32] : [-0.29, 0, 0.29];
   const pans = Array.from({ length: voiceCount }, (_, index) => new Tone.Panner(panPositions[index]!).connect(voiceFilter));
   const voices: MelodicVoice[] = Array.from({ length: voiceCount }, (_, index) => {
     const voice = recipe.engine === "fm"
-      ? new Tone.FMSynth({
-          oscillator: { type: recipe.carrier },
-          modulation: { type: recipe.modulator },
+      ? new FmVoice({
+          carrier: recipe.carrier as BasicWave,
+          modulator: recipe.modulator as BasicWave,
           harmonicity: recipe.harmonicity,
           modulationIndex: recipe.modulationIndex,
           envelope: definition.envelope,
           modulationEnvelope: recipe.modulationEnvelope,
         }).connect(pans[index]!)
-      : new Tone.Synth({
-          oscillator: { type: recipe.oscillator, count: recipe.unisonCount, spread: recipe.spread },
-          envelope: definition.envelope,
-        }).connect(pans[index]!);
+      : analogVoice({ kind: "fat", type: "sawtooth", count: recipe.unisonCount, spread: recipe.spread }, definition.envelope).connect(pans[index]!);
     if (recipe.engine === "analog") voice.detune.value = (index - (voiceCount - 1) / 2) * recipe.detune;
     return voice;
   });
   return {
     trigger: (notes, step, time, velocity, macros, context) => {
+      sleep.wake(time, time + Tone.Time(duration(step)).toSeconds() + Math.max(definition.envelope.release, definition.voiceFilter.release) + SLEEP_MARGIN_SECONDS);
       filterEnvelope.baseFrequency = definition.voiceFilter.base * (0.72 + clamp01(macros.color) * 0.58);
       filterEnvelope.octaves = definition.voiceFilter.octaves * (0.82 + clamp01(macros.color) * 0.26);
       filterEnvelope.triggerAttack(time, velocity);
@@ -537,20 +569,21 @@ function createStabBank(preset: SoundPresetMap["stab"], destination: Tone.ToneAu
         const note = notes[index];
         if (note === undefined) return;
         if (recipe.engine === "analog") voice.detune.rampTo((index - (voiceCount - 1) / 2) * recipe.detune * (0.65 + clamp01(macros.motion) * 0.55), 0.035, time);
-        voice.triggerAttackRelease(Tone.Frequency(note, "midi").toFrequency(), duration(step), time, velocity);
+        voice.triggerAttackRelease(Tone.Frequency(note, "midi").toFrequency(), seconds(duration(step)), time, velocity);
       });
     },
     release: (time) => { voices.forEach((voice) => voice.triggerRelease(time)); filterEnvelope.triggerRelease(time); },
-    dispose: () => { voices.forEach((voice) => voice.dispose()); pans.forEach((pan) => pan.dispose()); filterEnvelope.dispose(); voiceFilter.dispose(); output.dispose(); },
+    dispose: () => { sleep.dispose(); voices.forEach((voice) => voice.dispose()); pans.forEach((pan) => pan.dispose()); filterEnvelope.dispose(); voiceFilter.dispose(); output.dispose(); },
   };
 }
 
-function createRaveBank(preset: SoundPresetMap["rave"], destination: Tone.ToneAudioNode): VoiceBank {
+function createRaveBank(preset: SoundPresetMap["rave"], destination: Tone.ToneAudioNode, alwaysAwake: boolean): VoiceBank {
   const definition = presetDefinition("rave", preset);
   const recipe = definition.synthesis;
-  const output = new Tone.Gain(definition.level).connect(destination);
-  const chorus = new Tone.Chorus({ frequency: definition.modulation.frequency * 0.34, delayTime: 3.2, depth: 0.42, feedback: 0.04, wet: definition.modulation.chorusWet }).connect(output).start(Tone.now());
-  const vibrato = new Tone.Vibrato({ frequency: definition.modulation.frequency, depth: definition.modulation.vibratoDepth, maxDelay: 0.004, wet: 0.16 }).connect(chorus);
+  const output = new Tone.Gain(definition.level);
+  const sleep = new SleepyOutput(output, destination, alwaysAwake);
+  const chorus = new LeanChorus({ frequency: definition.modulation.frequency * 0.34, delayTime: 3.2, depth: 0.42, feedback: 0.04, wet: definition.modulation.chorusWet }).connect(output);
+  const vibrato = new LeanVibrato({ frequency: definition.modulation.frequency, depth: definition.modulation.vibratoDepth, maxDelay: 0.004, wet: 0.16 }).connect(chorus);
   const voiceBus = new Tone.Gain(1).connect(vibrato);
   const voices: { voice: MelodicVoice; semitones: number; level: number; baseDetune: number; pan: Tone.Panner }[] = [];
   const addVoice = (voice: MelodicVoice, semitones: number, level: number, baseDetune: number, panValue: number) => {
@@ -559,29 +592,30 @@ function createRaveBank(preset: SoundPresetMap["rave"], destination: Tone.ToneAu
     voices.push({ voice, semitones, level, baseDetune, pan });
   };
   if (recipe.engine === "fm") {
-    addVoice(new Tone.FMSynth({
-      oscillator: { type: recipe.carrier },
-      modulation: { type: recipe.modulator },
+    addVoice(new FmVoice({
+      carrier: recipe.carrier as BasicWave,
+      modulator: recipe.modulator as BasicWave,
       harmonicity: recipe.harmonicity,
       modulationIndex: recipe.modulationIndex,
       envelope: definition.envelope,
       modulationEnvelope: recipe.modulationEnvelope,
     }), 0, 1, 0, 0);
   } else if (preset === "hoover") {
-    [-19, -7, 7, 19].forEach((detune, index) => addVoice(new Tone.Synth({ oscillator: { type: "sawtooth" }, envelope: definition.envelope }), 0, 0.47, detune, [-0.48, -0.16, 0.16, 0.48][index]!));
-    addVoice(new Tone.Synth({ oscillator: { type: "pulse", width: 0.42 }, envelope: { ...definition.envelope, sustain: 0.3 } }), -12, 0.19, 0, 0);
+    [-19, -7, 7, 19].forEach((detune, index) => addVoice(analogVoice({ kind: "basic", type: "sawtooth" }, definition.envelope), 0, 0.47, detune, [-0.48, -0.16, 0.16, 0.48][index]!));
+    addVoice(analogVoice({ kind: "pulse", width: 0.42 }, { ...definition.envelope, sustain: 0.3 }), -12, 0.19, 0, 0);
   } else {
-    addVoice(new Tone.Synth({ oscillator: { type: "pulse", width: recipe.pulseWidth ?? 0.36 }, envelope: definition.envelope }), 0, 0.9, 0, -0.08);
-    addVoice(new Tone.Synth({ oscillator: { type: "square" }, envelope: { ...definition.envelope, sustain: 0.18 } }), -12, 0.18, 0, 0.08);
+    addVoice(analogVoice({ kind: "pulse", width: recipe.pulseWidth ?? 0.36 }, definition.envelope), 0, 0.9, 0, -0.08);
+    addVoice(analogVoice({ kind: "basic", type: "square" }, { ...definition.envelope, sustain: 0.18 }), -12, 0.18, 0, 0.08);
   }
   return {
     trigger: (notes, step, time, velocity, macros, context) => {
+      sleep.wake(time, time + Tone.Time(duration(step)).toSeconds() + definition.envelope.release + SLEEP_MARGIN_SECONDS);
       const note = notes[0];
       if (note === undefined) return;
       const motion = clamp01(macros.motion);
       vibrato.depth.rampTo(Math.min(0.18, definition.modulation.vibratoDepth + motion * definition.modulation.vibratoMotion), 0.04, time);
       vibrato.wet.rampTo(Math.min(0.3, 0.08 + motion * 0.18), 0.04, time);
-      chorus.wet.rampTo(Math.min(0.36, definition.modulation.chorusWet + motion * definition.modulation.chorusMotion), 0.04, time);
+      chorus.wet?.rampTo(Math.min(0.36, definition.modulation.chorusWet + motion * definition.modulation.chorusMotion), 0.04, time);
       voices.forEach(({ voice, semitones, level, baseDetune }) => {
         const slowMotion = ((context.bar * 16 + context.step) % 8 < 4 ? -1 : 1) * motion * 4;
         if (preset === "hoover") {
@@ -591,42 +625,44 @@ function createRaveBank(preset: SoundPresetMap["rave"], destination: Tone.ToneAu
           voice.detune.setValueAtTime(-82, time);
           voice.detune.linearRampToValueAtTime(78, time + Math.min(0.34, stepDurationSeconds(step.length, context.tempo) * 0.8));
         }
-        voice.triggerAttackRelease(Tone.Frequency(note + semitones, "midi").toFrequency(), duration(step), time, clamp01(velocity * level));
+        voice.triggerAttackRelease(Tone.Frequency(note + semitones, "midi").toFrequency(), seconds(duration(step)), time, clamp01(velocity * level));
       });
     },
     release: (time) => voices.forEach(({ voice }) => voice.triggerRelease(time)),
-    dispose: () => { voices.forEach(({ voice, pan }) => { voice.dispose(); pan.dispose(); }); voiceBus.dispose(); vibrato.dispose(); chorus.dispose(); output.dispose(); },
+    dispose: () => { sleep.dispose(); voices.forEach(({ voice, pan }) => { voice.dispose(); pan.dispose(); }); voiceBus.dispose(); vibrato.dispose(); chorus.dispose(); output.dispose(); },
   };
 }
 
-function createTextureBank(preset: SoundPresetMap["texture"], destination: Tone.ToneAudioNode): VoiceBank {
+function createTextureBank(preset: SoundPresetMap["texture"], destination: Tone.ToneAudioNode, alwaysAwake: boolean): VoiceBank {
   const definition = presetDefinition("texture", preset);
-  const output = new Tone.Gain(definition.level).connect(destination);
+  const output = new Tone.Gain(definition.level);
+  const sleep = new SleepyOutput(output, destination, alwaysAwake);
   const recipe = definition.synthesis;
   if (recipe.source === "drone") {
-    const highFilter = new Tone.Filter({ type: "bandpass", frequency: recipe.filterFrequency, Q: 0.72, rolloff: -24 });
-    const widener = new Tone.StereoWidener(0.68).connect(output);
+    const highFilter = new LeanFilter({ type: "bandpass", frequency: recipe.filterFrequency, Q: 0.72, rolloff: -24 });
+    const widener = new LeanStereoWidener(0.68).connect(output);
     highFilter.connect(widener);
-    const lowFilter = new Tone.Filter({ type: "lowpass", frequency: 165, Q: 0.4, rolloff: -24 }).connect(output);
+    const lowFilter = new LeanFilter({ type: "lowpass", frequency: 165, Q: 0.4, rolloff: -24 }).connect(output);
     const sawGain = new Tone.Gain(recipe.sawLevel).connect(highFilter);
     const sineGain = new Tone.Gain(recipe.sineLevel).connect(lowFilter);
-    const saw = new Tone.Synth({ oscillator: { type: "fatsawtooth", count: recipe.unisonCount, spread: recipe.spread }, envelope: definition.envelope }).connect(sawGain);
-    const sine = new Tone.Synth({ oscillator: { type: "sine" }, envelope: definition.envelope }).connect(sineGain);
+    const saw = new OneShotTone({ kind: "fat", type: "sawtooth", count: recipe.unisonCount, spread: recipe.spread }, { envelope: definition.envelope }).connect(sawGain);
+    const sine = new OneShotTone({ kind: "basic", type: "sine" }, { envelope: definition.envelope }).connect(sineGain);
     return {
       trigger: (notes, step, time, velocity) => {
+        sleep.wake(time, time + Tone.Time(step.length === "short" ? "8n" : "2n").toSeconds() + definition.envelope.release + SLEEP_MARGIN_SECONDS);
         const note = notes[0] ?? 36;
-        saw.triggerAttackRelease(Tone.Frequency(note, "midi").toFrequency(), step.length === "short" ? "8n" : "2n", time, velocity * 0.78);
-        sine.triggerAttackRelease(Tone.Frequency(note - 12, "midi").toFrequency(), step.length === "short" ? "8n" : "2n", time, velocity * 0.64);
+        saw.triggerAttackRelease(Tone.Frequency(note, "midi").toFrequency(), seconds(step.length === "short" ? "8n" : "2n"), time, velocity * 0.78);
+        sine.triggerAttackRelease(Tone.Frequency(note - 12, "midi").toFrequency(), seconds(step.length === "short" ? "8n" : "2n"), time, velocity * 0.64);
       },
       release: (time) => { saw.triggerRelease(time); sine.triggerRelease(time); },
-      dispose: () => [saw, sine, sawGain, sineGain, highFilter, lowFilter, widener, output].forEach((node) => node.dispose()),
+      dispose: () => { sleep.dispose(); [saw, sine, sawGain, sineGain, highFilter, lowFilter, widener, output].forEach((node) => node.dispose()); },
     };
   }
 
-  const widener = recipe.source === "riser" ? new Tone.StereoWidener(0.18).connect(output) : null;
+  const widener = recipe.source === "riser" ? new LeanStereoWidener(0.18).connect(output) : null;
   const panner = recipe.source === "noise" ? new Tone.Panner(-0.16).connect(output) : null;
-  const filter = new Tone.Filter({ type: "bandpass", frequency: recipe.filterStart, Q: recipe.source === "riser" ? 1.05 : 1.8, rolloff: -24 }).connect(widener ?? panner ?? output);
-  const noise = new Tone.NoiseSynth({ noise: { type: recipe.noise }, envelope: definition.envelope }).connect(filter);
+  const filter = new LeanFilter({ type: "bandpass", frequency: recipe.filterStart, Q: recipe.source === "riser" ? 1.05 : 1.8, rolloff: -24 }).connect(widener ?? panner ?? output);
+  const noise = new NoiseVoice(recipe.noise, definition.envelope).connect(filter);
   return {
     trigger: (_notes, step, time, velocity, macros, context) => {
       const motion = clamp01(macros.motion);
@@ -646,13 +682,16 @@ function createTextureBank(preset: SoundPresetMap["texture"], destination: Tone.
         panner.pan.linearRampToValueAtTime(0.2 * direction, time + sweepSeconds);
       }
       const noteLength = recipe.source === "riser" ? sweepSeconds : step.length === "long" ? "2n" : "8n";
-      noise.triggerAttackRelease(noteLength, time, velocity);
+      sleep.wake(time, time + Tone.Time(noteLength).toSeconds() + definition.envelope.release + SLEEP_MARGIN_SECONDS);
+      noise.triggerAttackRelease(seconds(noteLength), time, velocity);
     },
     release: (time) => noise.triggerRelease(time),
-    dispose: () => { noise.dispose(); filter.dispose(); widener?.dispose(); panner?.dispose(); output.dispose(); },
+    dispose: () => { sleep.dispose(); noise.dispose(); filter.dispose(); widener?.dispose(); panner?.dispose(); output.dispose(); },
   };
 }
 
+function hertz(note: Tone.Unit.Frequency): number { return Tone.Frequency(note).toFrequency(); }
+function seconds(time: Tone.Unit.Time): number { return Tone.Time(time).toSeconds(); }
 function dynamicsVelocity(step: Step): number { return step.dynamics === "ghost" ? 0.4 : step.dynamics === "accent" ? 0.94 : 0.68; }
 function duration(step: Step): Tone.Unit.Time { return step.length === "short" ? "32n" : step.length === "long" ? "8n" : "16n"; }
 function zeroPeaks(): Record<TrackKind, number> { return Object.fromEntries(TRACK_KINDS.map((track) => [track, 0])) as Record<TrackKind, number>; }
@@ -818,12 +857,12 @@ async function renderOfflineFactory(profile: "hard" | "acid" | "hybrid", tempo: 
   return analyzeOfflineBuffer(buffer);
 }
 
-function createVoiceBank(track: TrackKind, preset: SoundPresetId, destination: Tone.ToneAudioNode): VoiceBank {
-  return track === "drums" ? createDrumBank(preset as SoundPresetMap["drums"], destination)
-    : track === "acid" ? createAcidBank(preset as SoundPresetMap["acid"], destination)
-      : track === "stab" ? createStabBank(preset as SoundPresetMap["stab"], destination)
-        : track === "rave" ? createRaveBank(preset as SoundPresetMap["rave"], destination)
-          : createTextureBank(preset as SoundPresetMap["texture"], destination);
+function createVoiceBank(track: TrackKind, preset: SoundPresetId, destination: Tone.ToneAudioNode, alwaysAwake = true): VoiceBank {
+  return track === "drums" ? createDrumBank(preset as SoundPresetMap["drums"], destination, alwaysAwake)
+    : track === "acid" ? createAcidBank(preset as SoundPresetMap["acid"], destination, alwaysAwake)
+      : track === "stab" ? createStabBank(preset as SoundPresetMap["stab"], destination, alwaysAwake)
+        : track === "rave" ? createRaveBank(preset as SoundPresetMap["rave"], destination, alwaysAwake)
+          : createTextureBank(preset as SoundPresetMap["texture"], destination, alwaysAwake);
 }
 
 function schedulePresetExample(bank: VoiceBank, track: TrackKind, preset: SoundPresetId, tempo: number, macros: TrackMacros): void {

@@ -83,6 +83,16 @@ test("rendert die vollständige lokale Sound-Polish-Matrix innerhalb aller Analy
   expect(errors).toEqual([]);
 });
 
+test("hält den Signalweg schlank genug für Wiedergabe ohne Aussetzer", async ({ page }) => {
+  // Tone's wrapper nodes pushed a session to ~1,640 native nodes and Chromium
+  // underran more than half the time; the lean graph and voices keep it near 500.
+  await page.goto("./?audio-test=1");
+  await expect(page.locator("html")).toHaveAttribute("data-audio-test", "ready");
+  const nodes = await page.evaluate(() => window.__kittyAudioTest!.countEngineNodes());
+  expect(nodes.total).toBeLessThanOrEqual(560);
+  expect(nodes.constantSources).toBeLessThanOrEqual(20);
+});
+
 test("stellt den Offline-Testpfad ohne Query nicht bereit", async ({ page }) => {
   await page.goto("./");
   expect(await page.evaluate(() => window.__kittyAudioTest)).toBeUndefined();

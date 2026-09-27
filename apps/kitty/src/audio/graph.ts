@@ -1,6 +1,7 @@
 import * as Tone from "tone";
 import { presetDefinition, safeEffectParameters, type SaturationCurve } from "../domain/sound-presets";
 import type { SoundPresetId, TrackKind, TrackMacros } from "../domain/types";
+import { LeanEq3, LeanFilter, LeanStereoWidener } from "./lean";
 import { faderGain } from "./polish";
 
 export const MASTER_GRAPH_RECIPE = {
@@ -137,8 +138,8 @@ export interface MasterGraph {
 
 export function createMasterGraph(destination: AudioNode | Tone.ToneAudioNode, volume: number, meter?: AudioNode): MasterGraph {
   const input = new Tone.Gain(1);
-  const highpass = new Tone.Filter({ type: "highpass", frequency: MASTER_GRAPH_RECIPE.highpass, rolloff: -24 });
-  const eq = new Tone.EQ3(MASTER_GRAPH_RECIPE.eq);
+  const highpass = new LeanFilter({ type: "highpass", frequency: MASTER_GRAPH_RECIPE.highpass, rolloff: -24 });
+  const eq = new LeanEq3(MASTER_GRAPH_RECIPE.eq);
   const compressor = new Tone.Compressor(MASTER_GRAPH_RECIPE.compressor);
   const clipper = new CharacterSaturator(MASTER_GRAPH_RECIPE.saturation.curve);
   clipper.setAmount(MASTER_GRAPH_RECIPE.saturation.amount, 0.001);
@@ -154,22 +155,22 @@ export interface TrackGraph {
   baseVolume: number;
   outputTrimGain: number;
   input: Tone.Gain;
-  highpass: Tone.Filter;
-  eq: Tone.EQ3;
-  filter: Tone.Filter;
+  highpass: LeanFilter;
+  eq: LeanEq3;
+  filter: LeanFilter;
   saturator: CharacterSaturator;
   compressor: Tone.Compressor;
   dry: Tone.Gain;
   delaySend: Tone.Gain;
   delay: WarehouseDelay;
-  delayHighpass: Tone.Filter;
-  delayLowpass: Tone.Filter;
+  delayHighpass: LeanFilter;
+  delayLowpass: LeanFilter;
   reverbSend: Tone.Gain;
   reverb: WarehouseReverb;
-  reverbHighpass: Tone.Filter;
-  reverbLowpass: Tone.Filter;
+  reverbHighpass: LeanFilter;
+  reverbLowpass: LeanFilter;
   sum: Tone.Gain;
-  widener: Tone.StereoWidener | null;
+  widener: LeanStereoWidener | null;
   duck: Tone.Gain;
   gain: Tone.Gain;
   ready: Promise<void>;
@@ -196,9 +197,10 @@ export function createTrackGraph(
   const channel = presetDefinition(track, preset).channel;
   const parameters = safeEffectParameters(track, preset, macros);
   const input = new Tone.Gain(dbToGain(channel.inputTrimDb));
-  const highpass = new Tone.Filter({ type: "highpass", frequency: channel.highpass, rolloff: -24 });
-  const eq = new Tone.EQ3(channel.eq);
-  const filter = new Tone.Filter({
+  const highpass = new LeanFilter({ type: "highpass", frequency: channel.highpass, rolloff: -24 });
+  const eq = new LeanEq3(channel.eq);
+  const filter = new LeanFilter({
+    mutableRolloff: true,
     type: "lowpass",
     frequency: track === "acid" ? 13_000 : parameters.cutoff,
     Q: track === "acid" ? 0.5 : parameters.q,
@@ -210,14 +212,14 @@ export function createTrackGraph(
   const dry = new Tone.Gain(1);
   const delaySend = new Tone.Gain(parameters.delayWet);
   const delay = new WarehouseDelay(DELAY_TIMES[track], channel.delayReturn.stereo, parameters.feedback);
-  const delayHighpass = new Tone.Filter({ type: "highpass", frequency: channel.delayReturn.highpass, rolloff: -24 });
-  const delayLowpass = new Tone.Filter({ type: "lowpass", frequency: channel.delayReturn.lowpass, rolloff: -12 });
+  const delayHighpass = new LeanFilter({ type: "highpass", frequency: channel.delayReturn.highpass, rolloff: -24 });
+  const delayLowpass = new LeanFilter({ type: "lowpass", frequency: channel.delayReturn.lowpass, rolloff: -12 });
   const reverbSend = new Tone.Gain(parameters.reverbWet);
   const reverb = new WarehouseReverb(REVERBS[track].decay, REVERBS[track].preDelay);
-  const reverbHighpass = new Tone.Filter({ type: "highpass", frequency: channel.reverbReturn.highpass, rolloff: -24 });
-  const reverbLowpass = new Tone.Filter({ type: "lowpass", frequency: channel.reverbReturn.lowpass, rolloff: -12 });
+  const reverbHighpass = new LeanFilter({ type: "highpass", frequency: channel.reverbReturn.highpass, rolloff: -24 });
+  const reverbLowpass = new LeanFilter({ type: "lowpass", frequency: channel.reverbReturn.lowpass, rolloff: -12 });
   const sum = new Tone.Gain(1);
-  const widener = track === "drums" || track === "acid" ? null : new Tone.StereoWidener(channel.stereo.base + normalized(macros.motion) * channel.stereo.motion);
+  const widener = track === "drums" || track === "acid" ? null : new LeanStereoWidener(channel.stereo.base + normalized(macros.motion) * channel.stereo.motion);
   const duck = new Tone.Gain(1);
   const gain = new Tone.Gain(volume * dbToGain(channel.outputTrimDb));
 
