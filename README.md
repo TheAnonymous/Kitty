@@ -84,6 +84,24 @@ Beim ersten Besuch führt eine kurze Tour durch Start, Szenen, Spuren und
 Szenenfolge. Ein Zug an einem Regler ist ein einziger Undo-Schritt. Solange
 Musik läuft, bleibt der Bildschirm an.
 
+**Im Raster:** Jeder Step hat eine **Chance** (100, 75, 50 oder 25 %), die bei
+jedem Durchlauf neu würfelt, und Drums, Acid, Stab und Rave eine
+**Wiederholung** (2–4 schnelle Schläge im Step). Jede Spur kann eine eigene
+**Länge** bekommen (12–60 Steps); sie läuft gegen die vier Takte der Szene
+weiter und verschiebt sich dabei (Polymetrik).
+
+**Live spielen:** Die Live-Leiste nimmt mit **Aufnahme** (`A`) auf, was du
+hörst, und speichert es als WAV. Mit **Live-Tasten** (`P`) schalten `1`–`5`
+Spuren am nächsten Takt stumm. Der **Filter** federt beim Loslassen zurück
+(`F` halten schließt, `Umschalt+F` öffnet). **Break → Drop** (`B` halten) nimmt
+Kick und Acid heraus und lässt einen Hochpass steigen; beim Loslassen kommt der
+Drop am nächsten Takt. Nichts davon landet im Projekt oder in der Undo-Liste.
+
+**Gleichtakt:** Ist die Groovebox in einem zweiten Tab offen und dort wie hier
+**Gleichtakt** an, starten und stoppen beide gemeinsam; wer startet, gibt das
+Tempo vor, die andere App verdoppelt oder halbiert es bei Bedarf. **Stems**
+im Export-Dialog liefern jede Spur als eigene WAV-Datei in einem ZIP.
+
 **MIDI** (Chrome, Edge; Firefox nach Nachfrage): Kitty hört nur zu. Eine
 MIDI-Clock gibt Tempo, Start und Stop vor, ohne das Tempo des Projekts zu
 ändern; die Regler CC 70–74 steuern Farbe, Druck, Raum, Bewegung und Dichte der

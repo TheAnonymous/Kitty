@@ -5,6 +5,7 @@ import {
   KvBadge,
   KvButton,
   KvCard,
+  KvCheckbox,
   KvDialog,
   KvField,
   KvInput,
@@ -18,6 +19,8 @@ import {
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { ToneAudioEngine, type PerformanceState } from "./audio/engine";
 import { MAX_RECORDING_SECONDS } from "./audio/recorder";
+import { stemsArchive } from "./audio/stems";
+import { AppLink, fitTempo, type LinkPeer } from "./link";
 import { planSeconds, renderPlan, renderProject, type ExportMode } from "./audio/render";
 import { audibleRange, encodePcm16Wav, encodeWav, trimmedLength } from "./audio/wav";
 import { MidiLink, type MidiStatus } from "./midi";
@@ -39,7 +42,7 @@ import type {
   TrackKind,
   VariationAmount,
 } from "./domain/types";
-import { DRUM_VOICES, LOOP_LENGTHS, MACRO_KINDS, RATCHETS, ROOT_NOTES, SCALES, SCENE_COUNT, SCENE_REPEATS, STEP_CHANCES, TRACK_KINDS, VARIATION_AMOUNTS } from "./domain/types";
+import { DRUM_VOICES, LOOP_LENGTHS, MACRO_KINDS, MAX_TEMPO, MIN_TEMPO, RATCHETS, ROOT_NOTES, SCALES, SCENE_COUNT, SCENE_REPEATS, STEP_CHANCES, TRACK_KINDS, VARIATION_AMOUNTS } from "./domain/types";
 import { allowsRatchet, loopPosition, sceneSteps, stepChance, stepRatchet } from "./domain/patterns";
 import { KittyProjectRepository, MAX_PROJECTS } from "./storage";
 import { canAddDrumVoice, KittyStore, selectedPattern, selectedStep, type Action } from "./store/store";
@@ -134,6 +137,17 @@ const filterValue = ref(0);
 let recordingTimer: ReturnType<typeof setInterval> | undefined;
 let filterTarget = 0;
 let filterFrame: number | null = null;
+const exportStems = ref(false);
+const linkOn = ref(false);
+const linkPeers = ref<LinkPeer[]>([]);
+/** The partner's tempo Kitty follows, or `null` while it plays its own. */
+let linkTempo: number | null = null;
+const link = new AppLink("kitty", {
+  start: (at, bpm, from) => void followStart(at, bpm, from),
+  stop: () => { if (isPlaying.value) engine.stop(); },
+  tempo: (bpm, from) => followTempo(bpm, from),
+  peers: (peers) => { linkPeers.value = peers; },
+});
 const helpDialog = ref(false);
 const midiDialog = ref(false);
 const midiStatus = ref<MidiStatus>({ state: MidiLink.supported() ? "off" : "unsupported", inputs: [] });
@@ -147,7 +161,7 @@ const midi = new MidiLink("kitty.midi.v1", {
   learned: () => { midiRevision.value += 1; },
   clockTempo: (bpm) => followClockTempo(bpm),
   start: () => void startFromMidi(),
-  stop: () => { if (isPlaying.value) engine.stop(); },
+  stop: () => { if (isPlaying.value) stopPlayback(); },
   control: (index, value) => queueMacro(index, value),
 });
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -190,6 +204,11 @@ const chainNextScene = computed(() => state.value.ui.sceneChain && isPlaying.val
 const unsubscribe = store.subscribe((next, action) => {
   state.value = structuredClone(next);
   engine.setSceneChain(next.ui.sceneChain ? next.project.sceneRepeats : null);
+  if (action.type === "project/tempo" && link.enabled) {
+    // Turning the tempo takes the lead: Kitty plays its own tempo and the partner follows.
+    releaseLinkTempo();
+    link.announceTempo(next.project.tempo);
+  }
   if (next.autosave !== "saving") return;
   engine.syncProject(next.project);
   clearTimeout(saveTimer);
@@ -239,9 +258,72 @@ function save(): void {
 }
 
 async function toggleTransport(): Promise<void> {
-  if (isPlaying.value || state.value.transport.status === "starting") engine.stop();
-  else await engine.start(state.value.ui.selectedScene);
+  if (isPlaying.value || state.value.transport.status === "starting") stopPlayback();
+  else await startPlayback();
 }
+
+/** Every local start: alone, or as the leader of a coupled app starting at the same moment. */
+async function startPlayback(): Promise<void> {
+  const scene = state.value.ui.selectedScene;
+  if (!link.enabled || link.peers.length === 0) {
+    await engine.start(scene);
+    return;
+  }
+  releaseLinkTempo();
+  await engine.start(scene, link.announceStart(state.value.project.tempo));
+}
+
+function stopPlayback(): void {
+  engine.stop();
+  if (link.enabled) link.announceStop();
+}
+
+function toggleLink(): void {
+  if (link.enabled) {
+    link.disable();
+    releaseLinkTempo();
+  } else {
+    // The click lets this tab start audio later, when the partner starts it.
+    void engine.initialize();
+    link.enable();
+  }
+  linkOn.value = link.enabled;
+  linkPeers.value = link.peers;
+}
+
+async function followStart(at: number, bpm: number, from: LinkPeer): Promise<void> {
+  linkTempo = fitTempo(bpm, MIN_TEMPO, MAX_TEMPO);
+  engine.setTempoOverride(linkTempo);
+  if (isPlaying.value) engine.stop();
+  if (navigator.userActivation && !navigator.userActivation.hasBeenActive) return;
+  await engine.start(state.value.ui.selectedScene, at);
+  dispatch({ type: "transport/update", update: { message: `Gleichtakt mit ${appName(from.app)} · ${Math.round(linkTempo)} BPM` } });
+}
+
+function followTempo(bpm: number, from: LinkPeer): void {
+  if (linkTempo === null) return;
+  linkTempo = fitTempo(bpm, MIN_TEMPO, MAX_TEMPO);
+  engine.setTempoOverride(linkTempo);
+  if (isPlaying.value) dispatch({ type: "transport/update", update: { message: `Gleichtakt mit ${appName(from.app)} · ${Math.round(linkTempo)} BPM` } });
+}
+
+function disableLink(): void { link.disable(); }
+
+function releaseLinkTempo(): void {
+  if (linkTempo === null) return;
+  linkTempo = null;
+  engine.setTempoOverride(null);
+}
+
+function appName(app: string): string {
+  return app === "kitty" ? "Kitty" : app === "groovebox" ? "Groovebox" : app;
+}
+
+const linkTitle = computed(() => {
+  if (!linkOn.value) return "Gleichtakt: mit der Groovebox in einem anderen Tab gemeinsam starten, stoppen und im Tempo bleiben";
+  if (linkPeers.value.length === 0) return "Gleichtakt an – öffne die Groovebox in einem zweiten Tab und schalte dort Gleichtakt ein";
+  return `Gleichtakt mit ${[...new Set(linkPeers.value.map((peer) => appName(peer.app)))].join(", ")}: wer startet, gibt das Tempo vor`;
+});
 
 function selectScene(scene: number): void {
   dispatch({ type: "ui/select-scene", scene });
@@ -280,7 +362,7 @@ async function startFromMidi(): Promise<void> {
     dispatch({ type: "transport/update", update: { message: "MIDI-Start: klick einmal in Kitty, damit der Browser Ton erlaubt" } });
     return;
   }
-  await engine.start(state.value.ui.selectedScene);
+  await startPlayback();
 }
 
 function queueMacro(index: number, value: number): void {
@@ -425,13 +507,25 @@ async function exportAudio(): Promise<void> {
   try {
     flushAutosave();
     const project = structuredClone(store.getState().project);
+    const stems = exportStems.value;
     const buffer = await renderProject(project, mode, (fraction) => {
       exportStatus.value = `Wird gerendert … ${Math.round(fraction * 100)} % von etwa ${estimate} Sekunden. Lass das Fenster dabei offen.`;
-    });
+    }, { stems });
     const musicFrames = Math.round(planSeconds(project, renderPlan(project, mode)) * buffer.sampleRate);
-    const wav = encodeWav(buffer, trimmedLength(buffer, musicFrames));
     const suffix = mode.kind === "arc" ? "bogen" : fileSlug(project.scenes[mode.scene]?.name ?? "", "szene");
-    const fileName = `${fileSlug(active.value.name)}-${suffix}.wav`;
+    const base = `${fileSlug(active.value.name)}-${suffix}`;
+    if (stems) {
+      const { archive, included, silent } = stemsArchive(buffer, TRACK_KINDS, musicFrames);
+      if (included.length === 0) throw new Error("Alle Spuren sind stumm.");
+      downloadBlob(archive, `${base}-stems.zip`);
+      exportStatus.value = "";
+      exportDialog.value = false;
+      const skipped = silent.length > 0 ? ` Stumm und deshalb nicht dabei: ${silent.map((track) => TRACK_LABELS[track as TrackKind].name).join(", ")}.` : "";
+      toast.toast({ title: "Stems gespeichert", description: `${base}-stems.zip mit ${included.length} Spuren liegt jetzt in deinen Downloads.${skipped}`, status: "success" });
+      return;
+    }
+    const wav = encodeWav(buffer, trimmedLength(buffer, musicFrames));
+    const fileName = `${base}.wav`;
     downloadBlob(new Blob([wav], { type: "audio/wav" }), fileName);
     exportStatus.value = "";
     exportDialog.value = false;
@@ -594,7 +688,7 @@ function cancelFilterGlide(): void {
 async function toggleRecording(): Promise<void> {
   if (recording.value) { await finishRecording(); return; }
   try {
-    if (!isPlaying.value) await engine.start(state.value.ui.selectedScene);
+    if (!isPlaying.value) await startPlayback();
     await engine.startRecording();
   } catch (error) {
     toast.toast({ title: "Aufnahme nicht gestartet", description: errorMessage(error), status: "error" });
@@ -664,6 +758,7 @@ onMounted(() => {
   window.addEventListener("keyup", onLiveKeyUp);
   window.addEventListener("blur", onWindowBlur);
   window.addEventListener("pagehide", disposeAudio);
+  window.addEventListener("pagehide", disableLink);
   window.addEventListener("dragover", onDragOver);
   window.addEventListener("drop", onDrop);
   window.addEventListener("hashchange", onHashChange);
@@ -683,6 +778,8 @@ onBeforeUnmount(() => {
   window.removeEventListener("keyup", onLiveKeyUp);
   window.removeEventListener("blur", onWindowBlur);
   window.removeEventListener("pagehide", disposeAudio);
+  window.removeEventListener("pagehide", disableLink);
+  link.disable();
   window.removeEventListener("dragover", onDragOver);
   window.removeEventListener("drop", onDrop);
   window.removeEventListener("hashchange", onHashChange);
@@ -729,6 +826,7 @@ onBeforeUnmount(() => {
         </span>
         <KvButton variant="secondary" size="sm" @click="projectsDialog = true">Projekte</KvButton>
         <KvButton size="sm" :disabled="projects.length >= MAX_PROJECTS" @click="newDialog = true">Neu</KvButton>
+        <button v-if="AppLink.supported()" type="button" class="head-button" :aria-pressed="linkOn" :title="linkTitle" @click="toggleLink"><i class="link-led" :data-state="!linkOn ? 'off' : linkPeers.length > 0 ? 'linked' : 'waiting'" aria-hidden="true" />GLEICHTAKT</button>
         <button v-if="midiStatus.state !== 'unsupported'" type="button" class="head-button" title="MIDI-Controller und MIDI-Clock verbinden" @click="midiDialog = true"><i class="midi-led" :data-state="midiStatus.state" aria-hidden="true" />MIDI</button>
         <button type="button" class="head-button" aria-label="Hilfe und Tastenkürzel" title="Hilfe und Tastenkürzel (?)" @click="helpDialog = true">?</button>
       </div>
@@ -990,6 +1088,7 @@ onBeforeUnmount(() => {
   <KvDialog v-model:open="exportDialog" title="Als WAV exportieren" description="Klingt wie die Wiedergabe und entsteht schneller als in Echtzeit. Läuft gerade Musik, wird sie dafür angehalten." close-label="Schließen">
     <div class="dialog-stack">
       <KvRadioGroup v-model="exportMode" label="Was soll in die Datei?" :options="exportOptions" />
+      <KvCheckbox v-model="exportStems" label="Spuren einzeln (Stems)" description="Jede Spur als eigene WAV-Datei in einem ZIP, vor dem Master-Bus – zum Weitermischen in einer DAW." data-export-stems />
       <p class="dialog-status" data-export-status role="status">{{ exportStatus }}</p>
     </div>
     <template #footer>

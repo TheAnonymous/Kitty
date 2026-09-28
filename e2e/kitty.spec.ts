@@ -433,3 +433,47 @@ test("schaltet Spuren am Takt stumm und spielt Break, Drop und Filter", async ({
   await page.getByRole("button", { name: /STOP/ }).click();
   await expect(acid).toHaveAttribute("aria-pressed", "false");
 });
+
+test("exportiert jede Spur einzeln als Stems-ZIP", async ({ page }, testInfo) => {
+  test.setTimeout(120_000);
+  await page.getByRole("button", { name: "4 TAKTE" }).click();
+  await page.getByRole("button", { name: "Als WAV exportieren" }).click();
+  await page.getByText(/Nur „Aufwärmen“/).click();
+  await page.getByText("Spuren einzeln (Stems)").click();
+  const download = page.waitForEvent("download", { timeout: 100_000 });
+  await page.locator("[data-confirm-export]").click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("kitty-hybrid-aufwaermen-stems.zip");
+  const path = testInfo.outputPath(file.suggestedFilename());
+  await file.saveAs(path);
+  const { readFile } = await import("node:fs/promises");
+  const zip = await readFile(path);
+  expect(zip.readUInt32LE(0)).toBe(0x04034b50);
+  const names = zip.toString("latin1");
+  expect(names).toContain("01-drums.wav");
+  expect(names).toContain("02-acid.wav");
+  expect(zip.readUInt32LE(zip.length - 22)).toBe(0x06054b50);
+  expect(zip.readUInt16LE(zip.length - 12)).toBeGreaterThanOrEqual(3);
+});
+
+test("startet und stoppt zwei gekoppelte Tabs im Gleichtakt", async ({ page }) => {
+  test.setTimeout(60_000);
+  const partner = await page.context().newPage();
+  await partner.goto("./");
+  for (const tab of [page, partner]) {
+    await tab.getByRole("button", { name: "GLEICHTAKT" }).click();
+    await expect(tab.getByRole("button", { name: "GLEICHTAKT" })).toHaveAttribute("aria-pressed", "true");
+  }
+  await expect(page.locator(".link-led")).toHaveAttribute("data-state", "linked");
+  await expect(partner.locator(".link-led")).toHaveAttribute("data-state", "linked");
+
+  await page.getByRole("button", { name: /START/ }).click();
+  await expect(partner.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
+  await expect(partner.locator(".transport-readout")).toContainText("Gleichtakt mit Kitty · 150 BPM");
+  await page.getByRole("button", { name: /STOP/ }).click();
+  await expect(partner.getByRole("button", { name: /START/ })).toBeVisible({ timeout: 5_000 });
+
+  await partner.getByRole("button", { name: "GLEICHTAKT" }).click();
+  await expect(page.locator(".link-led")).toHaveAttribute("data-state", "waiting");
+  await partner.close();
+});

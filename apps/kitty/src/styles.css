@@ -177,6 +177,10 @@ button { touch-action: manipulation; }
   letter-spacing: .06em;
 }
 .head-button:hover { border-color: #85858b; }
+.link-led { width: 7px; height: 7px; border-radius: 50%; background: #3a3a3e; box-shadow: inset 0 0 0 1px #58585d; }
+.link-led[data-state="waiting"] { background: var(--kv-color-warning); }
+.link-led[data-state="linked"] { background: #43d17a; box-shadow: 0 0 7px #43d17a; }
+.head-button[aria-pressed="true"] { border-color: #85858b; }
 .midi-led { width: 7px; height: 7px; border-radius: 50%; background: #3a3a3e; box-shadow: inset 0 0 0 1px #58585d; }
 .midi-led[data-state="ready"] { background: #43d17a; box-shadow: 0 0 7px #43d17a; }
 .midi-led[data-state="denied"], .midi-led[data-state="error"] { background: var(--kv-color-signal); }

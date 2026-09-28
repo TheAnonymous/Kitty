@@ -86,6 +86,8 @@ export interface PerformanceState {
 export interface EngineOptions {
   /** Renders inside an offline context: no context-state checks, meters, draw callbacks or sleeping banks. */
   offline?: boolean;
+  /** Offline only: each track's stereo output on its own channel pair instead of the master mix. */
+  stems?: boolean;
 }
 
 /** What an offline render plays: the start scene, the chain setting and the number of sixteenth steps. */
@@ -145,7 +147,8 @@ export class ToneAudioEngine {
     this.emitStatus("idle", "Audio bereit");
   }
 
-  async start(scene: number): Promise<void> {
+  /** `at` (milliseconds since the epoch) starts in step with a coupled app. */
+  async start(scene: number, at?: number): Promise<void> {
     try {
       await this.initialize();
       if (Tone.getContext().state !== "running") return;
@@ -156,7 +159,7 @@ export class ToneAudioEngine {
       this.clock.start(scene);
       this.applyProject();
       this.scheduleId = transport.scheduleRepeat((time) => this.tick(time), "16n");
-      transport.start("+0.05");
+      transport.start(at === undefined ? "+0.05" : contextTimeAt(at));
       this.emitStatus("playing", "Wiedergabe läuft");
     } catch (error) {
       this.stop(false);
@@ -311,7 +314,10 @@ export class ToneAudioEngine {
 
   private async createGraph(): Promise<void> {
     const meter = createPeakMeter();
-    const master = createMasterGraph(Tone.getDestination(), this.project.masterVolume, meter.node);
+    // Stems skip the master: its output goes nowhere and each strip feeds its own channel pair.
+    const master = this.options.stems
+      ? createMasterGraph(new Tone.Gain(0), this.project.masterVolume)
+      : createMasterGraph(Tone.getDestination(), this.project.masterVolume, meter.node);
     this.masterNodes = master.nodes;
     this.masterFader = master.fader;
     this.masterPerformance = master.performance;
@@ -324,6 +330,7 @@ export class ToneAudioEngine {
       const graph = createTrackGraph(track, this.project.soundPresets[track], macros, gains[track], master.input, trackMeter.node);
       strips[track] = { ...graph, meter: trackMeter, parameterKey: trackParameterKey(this.project.soundPresets[track], macros, false) };
     }
+    if (this.options.stems) connectStems(TRACK_KINDS.map((track) => strips[track].gain));
     this.strips = strips;
     await Promise.all(Object.values(strips).map((strip) => strip.ready));
     if (this.strips !== strips) throw new Error("Audio-Vorbereitung wurde abgebrochen");
@@ -1178,4 +1185,31 @@ function energyRatioDb(numerator: number, denominator: number): number {
 
 function energyDb(energy: number, frames: number): number {
   return 10 * Math.log10(Math.max(1e-12, energy / Math.max(1, frames)));
+}
+
+/**
+ * Maps a wall-clock time (milliseconds since the epoch) onto this context's
+ * clock via its output timestamp, so two tabs on the same audio device sound
+ * at the same moment. Times already past start as soon as possible.
+ */
+export function contextTimeAt(epochMs: number): number {
+  const raw = Tone.getContext().rawContext as unknown as AudioContext;
+  const stamp = typeof raw.getOutputTimestamp === "function" ? raw.getOutputTimestamp() : null;
+  const target = stamp?.contextTime !== undefined && stamp.performanceTime
+    ? stamp.contextTime + (epochMs - (performance.timeOrigin + stamp.performanceTime)) / 1000
+    : raw.currentTime + (epochMs - (performance.timeOrigin + performance.now())) / 1000;
+  return Math.max(raw.currentTime + 0.03, target);
+}
+
+/** Routes each stereo output to its own channel pair of the (offline) destination. */
+function connectStems(outputs: readonly Tone.ToneAudioNode[]): void {
+  const raw = Tone.getContext().rawContext;
+  const merger = raw.createChannelMerger(outputs.length * 2);
+  outputs.forEach((output, index) => {
+    const splitter = raw.createChannelSplitter(2);
+    Tone.connect(output, splitter as unknown as AudioNode);
+    splitter.connect(merger, 0, index * 2);
+    splitter.connect(merger, 1, index * 2 + 1);
+  });
+  merger.connect(raw.destination);
 }
