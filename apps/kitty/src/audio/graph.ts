@@ -1,4 +1,5 @@
 import * as Tone from "tone";
+import { PerformanceFilter } from "./performance";
 import { presetDefinition, safeEffectParameters, type SaturationCurve } from "../domain/sound-presets";
 import type { SoundPresetId, TrackKind, TrackMacros } from "../domain/types";
 import { LeanEq3, LeanFilter, LeanStereoWidener } from "./lean";
@@ -132,12 +133,14 @@ export class WarehouseReverb extends Tone.ToneAudioNode {
 
 export interface MasterGraph {
   input: Tone.Gain;
+  performance: PerformanceFilter;
   fader: Tone.Gain;
   nodes: Tone.ToneAudioNode[];
 }
 
 export function createMasterGraph(destination: AudioNode | Tone.ToneAudioNode, volume: number, meter?: AudioNode): MasterGraph {
   const input = new Tone.Gain(1);
+  const performance = new PerformanceFilter();
   const highpass = new LeanFilter({ type: "highpass", frequency: MASTER_GRAPH_RECIPE.highpass, rolloff: -24 });
   const eq = new LeanEq3(MASTER_GRAPH_RECIPE.eq);
   const compressor = new Tone.Compressor(MASTER_GRAPH_RECIPE.compressor);
@@ -145,10 +148,10 @@ export function createMasterGraph(destination: AudioNode | Tone.ToneAudioNode, v
   clipper.setAmount(MASTER_GRAPH_RECIPE.saturation.amount, 0.001);
   const limiter = new Tone.Limiter(MASTER_GRAPH_RECIPE.limiterDb);
   const fader = new Tone.Gain(faderGain(volume));
-  input.chain(highpass, eq, compressor, clipper, limiter, fader);
+  input.chain(performance, highpass, eq, compressor, clipper, limiter, fader);
   if (meter) fader.chain(meter, destination);
   else fader.connect(destination);
-  return { input, fader, nodes: [input, highpass, eq, compressor, clipper, limiter, fader] };
+  return { input, performance, fader, nodes: [input, performance, highpass, eq, compressor, clipper, limiter, fader] };
 }
 
 export interface TrackGraph {

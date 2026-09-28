@@ -380,3 +380,56 @@ test("macht aus einem Reglerzug einen einzigen Undo-Schritt", async ({ page }) =
   await expect(swing).toHaveValue("0.08");
   await expect(page.getByRole("button", { name: /Undo/ })).toBeDisabled();
 });
+
+test("nimmt das Live-Spiel als WAV auf", async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  await page.locator("body").press("a");
+  await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
+  const record = page.locator(".live-record");
+  await expect(record).toHaveAttribute("aria-pressed", "true");
+  await expect(record.locator("output")).not.toHaveText("0:00", { timeout: 5_000 });
+  await page.waitForTimeout(1_500);
+  const download = page.waitForEvent("download");
+  await page.locator("body").press("a");
+  const file = await download;
+  expect(file.suggestedFilename()).toMatch(/^kitty-hybrid-live-\d{4}-\d{2}-\d{2}-\d{4}\.wav$/);
+  const path = testInfo.outputPath("live.wav");
+  await file.saveAs(path);
+  const { readFile } = await import("node:fs/promises");
+  const wav = await readFile(path);
+  expect(wav.subarray(0, 4).toString()).toBe("RIFF");
+  expect(wav.readUInt32LE(40) / (wav.readUInt32LE(24) * 4)).toBeGreaterThan(1.5);
+  let peak = 0;
+  for (let offset = 44; offset < wav.length; offset += 2) peak = Math.max(peak, Math.abs(wav.readInt16LE(offset)));
+  expect(peak).toBeGreaterThan(2_000);
+  await expect(page.locator(".kv-toast")).toContainText("Aufnahme gespeichert");
+});
+
+test("schaltet Spuren am Takt stumm und spielt Break, Drop und Filter", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.getByRole("button", { name: /START/ }).click();
+  await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
+  await page.locator("body").press("p");
+  await expect(page.locator(".live-keys")).toHaveAttribute("aria-pressed", "true");
+  await page.locator("body").press("2");
+  const acid = page.locator('.live-mute[data-track="acid"]');
+  await expect(acid).toHaveAttribute("data-pending", "");
+  await expect(acid).toHaveAttribute("aria-pressed", "true", { timeout: 6_000 });
+  await expect(acid).not.toHaveAttribute("data-pending", "");
+
+  const breakButton = page.locator("[data-perf-break]");
+  await page.keyboard.down("b");
+  await expect(breakButton).toHaveAttribute("data-state", "break");
+  await page.keyboard.up("b");
+  await expect(breakButton).toHaveAttribute("data-state", "drop");
+  await expect(breakButton).toHaveAttribute("data-state", "idle", { timeout: 6_000 });
+
+  const filter = page.locator("[data-perf-filter]");
+  await page.keyboard.down("f");
+  await expect.poll(async () => Number(await filter.inputValue())).toBeLessThan(-30);
+  await page.keyboard.up("f");
+  await expect(filter).toHaveValue("0");
+
+  await page.getByRole("button", { name: /STOP/ }).click();
+  await expect(acid).toHaveAttribute("aria-pressed", "false");
+});

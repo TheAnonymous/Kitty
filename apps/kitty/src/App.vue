@@ -16,9 +16,10 @@ import {
   useKvToast,
 } from "@kinky-vibes/ui";
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import { ToneAudioEngine } from "./audio/engine";
+import { ToneAudioEngine, type PerformanceState } from "./audio/engine";
+import { MAX_RECORDING_SECONDS } from "./audio/recorder";
 import { planSeconds, renderPlan, renderProject, type ExportMode } from "./audio/render";
-import { encodeWav, trimmedLength } from "./audio/wav";
+import { audibleRange, encodePcm16Wav, encodeWav, trimmedLength } from "./audio/wav";
 import { MidiLink, type MidiStatus } from "./midi";
 import { Tour, type TourStep } from "./tour";
 import { PlaybackWakeLock } from "./wake-lock";
@@ -85,6 +86,10 @@ const SHORTCUTS: readonly [string[], string][] = [
   [["Umschalt", "1 – 4"], "Szene wählen; läuft Musik, wechselt sie am nächsten Takt"],
   [["V"], "Variation in der gewählten Stärke"],
   [["R"], "Typisches Pattern für Spur und Profil"],
+  [["A"], "Aufnahme starten und beenden"],
+  [["P"], "Live-Tasten: 1 – 5 schalten Spuren am nächsten Takt stumm"],
+  [["F halten"], "Filter zu (Tiefpass), mit Umschalt auf (Hochpass)"],
+  [["B halten"], "Break: Kick und Acid raus; loslassen: Drop am nächsten Takt"],
   [["Strg", "Z"], "Rückgängig"],
   [["Strg", "Umschalt", "Z"], "Wiederholen"],
   [["?"], "Diese Hilfe"],
@@ -121,6 +126,14 @@ const shareUrl = ref("");
 const shareStatus = ref("");
 const sharedDialog = ref(false);
 const sharedOffer = shallowRef<ImportedProject | null>(null);
+const liveState = ref<PerformanceState>({ muted: [], pending: [], breakActive: false, dropPending: false });
+const liveKeys = ref(false);
+const recording = ref(false);
+const recordingSeconds = ref(0);
+const filterValue = ref(0);
+let recordingTimer: ReturnType<typeof setInterval> | undefined;
+let filterTarget = 0;
+let filterFrame: number | null = null;
 const helpDialog = ref(false);
 const midiDialog = ref(false);
 const midiStatus = ref<MidiStatus>({ state: MidiLink.supported() ? "off" : "unsupported", inputs: [] });
@@ -202,6 +215,8 @@ const offPlayhead = engine.onPlayhead((event) => {
     trackPeaks: event.trackPeaks,
   } });
 });
+
+const offPerformance = engine.onPerformance((next) => { liveState.value = next; });
 
 const offTriggered = engine.onPlayhead((event) => {
   triggeredTracks.value = [...new Set([...triggeredTracks.value, ...event.triggeredTracks])];
@@ -505,7 +520,17 @@ function drumDisabled(voice: DrumVoice): boolean {
 function onShortcut(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null;
   if (target?.closest("[role='dialog'], .kitty-tour")) return;
-  if (event.key === "?" && !target?.matches("input, select, textarea, [contenteditable='true']")) { event.preventDefault(); helpDialog.value = true; return; }
+  const typing = Boolean(target?.matches("input, select, textarea, [contenteditable='true']"));
+  if (event.key === "?" && !typing) { event.preventDefault(); helpDialog.value = true; return; }
+  // Live keys work on top of a focused button as well; they never type into fields.
+  if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    const live = event.key.toLowerCase();
+    if (live === "a") { event.preventDefault(); if (!event.repeat) void toggleRecording(); return; }
+    if (live === "p") { event.preventDefault(); if (!event.repeat) liveKeys.value = !liveKeys.value; return; }
+    if (live === "b") { event.preventDefault(); if (!event.repeat) engine.setBreak(true); return; }
+    if (live === "f") { event.preventDefault(); if (!event.repeat) glideFilter(event.shiftKey ? 0.85 : -0.85, 1.4); return; }
+    if (liveKeys.value && !event.shiftKey && /^[1-5]$/.test(event.key)) { event.preventDefault(); togglePerformanceMute(TRACK_KINDS[Number(event.key) - 1]!); return; }
+  }
   if (target?.matches("input, select, textarea, button, [contenteditable='true']")) return;
   const key = event.key.toLowerCase();
   if ((event.ctrlKey || event.metaKey) && key === "z") { event.preventDefault(); dispatch({ type: event.shiftKey ? "history/redo" : "history/undo" }); return; }
@@ -516,6 +541,91 @@ function onShortcut(event: KeyboardEvent): void {
   if (!event.shiftKey && number >= 1 && number <= 5) { event.preventDefault(); dispatch({ type: "ui/select-track", track: TRACK_KINDS[number - 1]! }); return; }
   if (key === "v") { event.preventDefault(); dispatch({ type: "track/vary" }); }
   if (key === "r") { event.preventDefault(); dispatch({ type: "track/typical" }); }
+}
+
+/** B and F are held; their release belongs to the key-up. */
+function onLiveKeyUp(event: KeyboardEvent): void {
+  const key = event.key.toLowerCase();
+  if (key === "b") releaseBreak();
+  if (key === "f" && filterTarget !== 0) glideFilter(0, 0.2);
+}
+
+function onWindowBlur(): void {
+  releaseBreak();
+  if (filterTarget !== 0 || filterValue.value !== 0) glideFilter(0, 0.18);
+}
+
+function releaseBreak(): void {
+  if (liveState.value.breakActive && !liveState.value.dropPending) engine.setBreak(false);
+}
+
+function togglePerformanceMute(track: TrackKind): void {
+  const muted = liveState.value.muted.includes(track);
+  // A second press before the bar line takes the change back.
+  engine.setPerformanceMute(track, liveState.value.pending.includes(track) ? muted : !muted);
+}
+
+function onFilterInput(event: Event): void {
+  cancelFilterGlide();
+  filterValue.value = Number((event.target as HTMLInputElement).value) / 100;
+  engine.setPerformanceFilter(filterValue.value);
+}
+
+/** Moves the filter to `target` over `seconds`, as holding F or releasing the fader does. */
+function glideFilter(target: number, seconds: number): void {
+  cancelFilterGlide();
+  filterTarget = target;
+  const from = filterValue.value;
+  const started = performance.now();
+  const step = (now: number) => {
+    const progress = Math.min(1, (now - started) / (seconds * 1000));
+    filterValue.value = from + (target - from) * progress;
+    engine.setPerformanceFilter(filterValue.value);
+    filterFrame = progress < 1 ? requestAnimationFrame(step) : null;
+  };
+  filterFrame = requestAnimationFrame(step);
+}
+
+function cancelFilterGlide(): void {
+  if (filterFrame !== null) cancelAnimationFrame(filterFrame);
+  filterFrame = null;
+}
+
+async function toggleRecording(): Promise<void> {
+  if (recording.value) { await finishRecording(); return; }
+  try {
+    if (!isPlaying.value) await engine.start(state.value.ui.selectedScene);
+    await engine.startRecording();
+  } catch (error) {
+    toast.toast({ title: "Aufnahme nicht gestartet", description: errorMessage(error), status: "error" });
+    return;
+  }
+  recording.value = true;
+  recordingSeconds.value = 0;
+  recordingTimer = setInterval(() => {
+    recordingSeconds.value = engine.recordingSeconds;
+    if (recordingSeconds.value >= MAX_RECORDING_SECONDS) void finishRecording("Nach 15 Minuten automatisch beendet.");
+  }, 250);
+}
+
+async function finishRecording(note?: string): Promise<void> {
+  if (!recording.value) return;
+  recording.value = false;
+  clearInterval(recordingTimer);
+  const pcm = await engine.stopRecording();
+  recordingSeconds.value = 0;
+  const range = audibleRange(pcm);
+  if (!range) { toast.toast({ title: "Aufnahme war still", description: "Es wurde nichts Hörbares aufgenommen.", status: "warning" }); return; }
+  const now = new Date();
+  const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}-${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+  const fileName = `${fileSlug(active.value.name)}-live-${stamp}.wav`;
+  downloadBlob(new Blob([encodePcm16Wav(pcm, range.start, range.end)], { type: "audio/wav" }), fileName);
+  toast.toast({ title: "Aufnahme gespeichert", description: `${fileName} (${formatClock((range.end - range.start) / pcm.sampleRate)} min) liegt in deinen Downloads.${note ? ` ${note}` : ""}`, status: "success" });
+}
+
+function formatClock(seconds: number): string {
+  const whole = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
 
 async function rememberLink(): Promise<void> {
@@ -551,6 +661,8 @@ function disposeAudio(): void {
 
 onMounted(() => {
   window.addEventListener("keydown", onShortcut);
+  window.addEventListener("keyup", onLiveKeyUp);
+  window.addEventListener("blur", onWindowBlur);
   window.addEventListener("pagehide", disposeAudio);
   window.addEventListener("dragover", onDragOver);
   window.addEventListener("drop", onDrop);
@@ -564,8 +676,12 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearTimeout(saveTimer);
-  unsubscribe(); offStatus(); offPlayhead(); offTriggered(); disposeAudio();
+  unsubscribe(); offStatus(); offPlayhead(); offTriggered(); offPerformance(); disposeAudio();
+  clearInterval(recordingTimer);
+  cancelFilterGlide();
   window.removeEventListener("keydown", onShortcut);
+  window.removeEventListener("keyup", onLiveKeyUp);
+  window.removeEventListener("blur", onWindowBlur);
   window.removeEventListener("pagehide", disposeAudio);
   window.removeEventListener("dragover", onDragOver);
   window.removeEventListener("drop", onDrop);
@@ -677,6 +793,42 @@ onBeforeUnmount(() => {
         <KvButton variant="secondary" size="sm" @click="openExport">Als WAV exportieren</KvButton>
         <KvButton variant="secondary" size="sm" @click="shareLink">Link teilen</KvButton>
       </div>
+    </section>
+
+    <section class="live-bar" aria-label="Live spielen und aufnehmen">
+      <button type="button" class="live-record" :aria-pressed="recording" title="Nimmt auf, was du hörst, und speichert es als WAV (A)" @click="toggleRecording">
+        <i aria-hidden="true" />{{ recording ? "AUFNAHME STOPPEN" : "AUFNAHME" }} <output data-record-time>{{ formatClock(recordingSeconds) }}</output>
+      </button>
+      <button type="button" class="live-keys" :aria-pressed="liveKeys" title="Mit Live-Tasten schalten 1–5 die Spuren am nächsten Takt stumm (P)" @click="liveKeys = !liveKeys">LIVE-TASTEN <kbd>P</kbd></button>
+      <div class="live-mutes" role="group" aria-label="Spuren am nächsten Takt stumm schalten">
+        <button
+          v-for="(track, index) in TRACK_KINDS"
+          :key="track"
+          type="button"
+          class="live-mute"
+          :data-track="track"
+          :aria-pressed="liveState.muted.includes(track)"
+          :data-pending="liveState.pending.includes(track) ? '' : undefined"
+          :aria-label="`${TRACK_LABELS[track].name} am nächsten Takt stumm schalten`"
+          @click="togglePerformanceMute(track)"
+        >{{ TRACK_LABELS[track].short }}<kbd v-if="liveKeys">{{ index + 1 }}</kbd></button>
+      </div>
+      <label class="live-filter" title="F halten: Tiefpass · Umschalt+F halten: Hochpass · federt beim Loslassen zurück">
+        <span>FILTER</span>
+        <input type="range" min="-100" max="100" step="1" :value="Math.round(filterValue * 100)" data-perf-filter aria-label="Filter, links Tiefpass, rechts Hochpass" @input="onFilterInput" @pointerup="glideFilter(0, 0.18)" @keyup="glideFilter(0, 0.18)">
+      </label>
+      <button
+        type="button"
+        class="live-break"
+        data-perf-break
+        :data-state="liveState.dropPending ? 'drop' : liveState.breakActive ? 'break' : 'idle'"
+        :aria-pressed="liveState.breakActive"
+        title="Halten: Kick und Acid raus, der Hochpass steigt. Loslassen: Drop am nächsten Takt (B)"
+        @pointerdown="engine.setBreak(true)"
+        @pointerup="releaseBreak"
+        @pointerleave="releaseBreak"
+        @pointercancel="releaseBreak"
+      >BREAK → DROP <kbd>B</kbd></button>
     </section>
 
     <div class="workspace">
@@ -800,7 +952,7 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <footer><span>Alles läuft lokal in deinem Browser · Projekte sicherst du unter Projekte → Als Datei sichern · <span data-app-version>{{ appVersion }}</span></span><span>LEERTASTE Start/Stop · 1–5 Spuren · UMSCHALT+1–4 Szenen · V Variation · R Typisch · ? Hilfe</span></footer>
+    <footer><span>Alles läuft lokal in deinem Browser · Projekte sicherst du unter Projekte → Als Datei sichern · <span data-app-version>{{ appVersion }}</span></span><span>LEERTASTE Start/Stop · 1–5 Spuren · UMSCHALT+1–4 Szenen · V Variation · R Typisch · A Aufnahme · B Break · ? Hilfe</span></footer>
   </main>
 
   <KvDialog v-model:open="newDialog" title="Neues Werkprojekt" description="Das Profil setzt nur dieses neue Projekt auf. Bestehende Musik bleibt unverändert." close-label="Schließen">

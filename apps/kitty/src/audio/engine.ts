@@ -29,6 +29,8 @@ import {
 import { LeanChorus, LeanFilter, LeanStereoWidener, LeanVibrato, SleepyOutput } from "./lean";
 import { DetuneSource, FmVoice, LeanEnvelope, LeanTone, NoiseVoice, OneShotTone, type BasicWave, type ToneSpec } from "./lean-voices";
 import { BarQueuedTransport, type SequencerPosition } from "./transport";
+import type { PerformanceFilter } from "./performance";
+import { MasterRecorder, type Recording } from "./recorder";
 
 export interface AudioStatusEvent { status: "idle" | "starting" | "playing" | "suspended" | "error"; message: string; }
 export interface PlayheadEvent extends SequencerPosition { peak: number; trackPeaks: Record<TrackKind, number>; triggeredTracks: TrackKind[]; ducking: boolean; acidLegato: boolean; chainNext: number | null; }
@@ -70,6 +72,17 @@ const SLEEP_MARGIN_SECONDS = 0.5;
 /** Longest drum decay (sub tail 0.68 s + release 0.32 s) plus margin. */
 const DRUM_TAIL_SECONDS = 1.5;
 
+/** Live-only layer on top of the project: nothing here is saved or undoable. */
+export interface PerformanceState {
+  /** Tracks silenced right now. */
+  muted: TrackKind[];
+  /** Tracks whose mute changes at the next bar line. */
+  pending: TrackKind[];
+  breakActive: boolean;
+  /** The break ends (the drop) at the next bar line. */
+  dropPending: boolean;
+}
+
 export interface EngineOptions {
   /** Renders inside an offline context: no context-state checks, meters, draw callbacks or sleeping banks. */
   offline?: boolean;
@@ -91,6 +104,13 @@ export class ToneAudioEngine {
   private strips: Record<TrackKind, TrackStrip> | null = null;
   private masterNodes: Tone.ToneAudioNode[] = [];
   private masterFader: Tone.Gain | null = null;
+  private masterPerformance: PerformanceFilter | null = null;
+  private readonly performanceMuted = new Set<TrackKind>();
+  private readonly performancePending = new Map<TrackKind, boolean>();
+  private breakActive = false;
+  private dropPending = false;
+  private readonly performanceListeners = new Set<(state: PerformanceState) => void>();
+  private readonly recorder = new MasterRecorder(() => undefined);
   private masterMeter: PeakMeter | null = null;
   private readonly banks = new Map<string, VoiceBank>();
   private activePresets: Partial<Record<TrackKind, SoundPresetId>> = {};
@@ -110,6 +130,8 @@ export class ToneAudioEngine {
   constructor(project: ProjectV1, private readonly options: EngineOptions = {}) { this.project = structuredClone(project); }
 
   async initialize(): Promise<void> {
+    // Already prepared (e.g. recording or MIDI while music plays): report nothing new.
+    if (this.initialized && Tone.getContext().state === "running") return;
     this.emitStatus("starting", "Audio wird vorbereitet …");
     await Tone.start();
     if (!this.initialized) {
@@ -143,6 +165,7 @@ export class ToneAudioEngine {
   }
 
   stop(emit = true): void {
+    this.resetPerformance();
     const transport = Tone.getTransport();
     transport.stop();
     if (this.scheduleId !== null) transport.clear(this.scheduleId);
@@ -163,6 +186,71 @@ export class ToneAudioEngine {
   queueScene(scene: number): number | null { return this.clock.queue(scene); }
 
   setSceneChain(repeats: number | null): void { this.clock.setChain(repeats); }
+
+  setPerformanceMute(track: TrackKind, muted: boolean): void {
+    if (this.performanceMuted.has(track) === muted) this.performancePending.delete(track);
+    else this.performancePending.set(track, muted);
+    // Without a running transport there is no bar line to wait for.
+    if (this.scheduleId === null) this.applyPendingMutes();
+    this.emitPerformance();
+  }
+
+  setBreak(active: boolean): void {
+    const now = Tone.now();
+    if (active) {
+      this.breakActive = true;
+      this.dropPending = false;
+      this.masterPerformance?.startRise(now, (2 * 240) / this.tempo);
+    } else if (this.breakActive) {
+      this.dropPending = true;
+      if (this.scheduleId === null) this.drop(now);
+    }
+    this.emitPerformance();
+  }
+
+  setPerformanceFilter(value: number): void { this.masterPerformance?.setFilter(value); }
+
+  onPerformance(listener: (state: PerformanceState) => void): () => void {
+    this.performanceListeners.add(listener);
+    return () => this.performanceListeners.delete(listener);
+  }
+
+  async startRecording(): Promise<void> {
+    if (!this.initialized) await this.initialize();
+    if (Tone.getContext().state !== "running") throw new Error("Audio ist pausiert");
+    await this.recorder.start(Tone.getDestination());
+  }
+
+  stopRecording(): Promise<Recording> { return this.recorder.stop(); }
+
+  get recordingSeconds(): number { return this.recorder.active ? this.recorder.seconds : 0; }
+
+  private applyPendingMutes(): void {
+    for (const [track, muted] of this.performancePending) {
+      if (muted) this.performanceMuted.add(track);
+      else this.performanceMuted.delete(track);
+    }
+    this.performancePending.clear();
+  }
+
+  private drop(time: number): void {
+    this.breakActive = false;
+    this.dropPending = false;
+    this.masterPerformance?.endRise(time);
+  }
+
+  private resetPerformance(): void {
+    this.performanceMuted.clear();
+    this.performancePending.clear();
+    if (this.breakActive || this.dropPending) this.drop(Tone.now());
+    this.masterPerformance?.setFilter(0);
+    this.emitPerformance();
+  }
+
+  private emitPerformance(): void {
+    const state: PerformanceState = { muted: [...this.performanceMuted], pending: [...this.performancePending.keys()], breakActive: this.breakActive, dropPending: this.dropPending };
+    for (const listener of this.performanceListeners) listener(state);
+  }
 
   /** An external MIDI clock's tempo replaces the project tempo until `null`; the project keeps its own. */
   setTempoOverride(bpm: number | null): void {
@@ -212,6 +300,7 @@ export class ToneAudioEngine {
     this.strips = null;
     this.masterNodes = [];
     this.masterFader = null;
+    this.masterPerformance = null;
     this.masterMeter = null;
     this.activePresets = {};
     this.appliedTempo = null;
@@ -225,6 +314,7 @@ export class ToneAudioEngine {
     const master = createMasterGraph(Tone.getDestination(), this.project.masterVolume, meter.node);
     this.masterNodes = master.nodes;
     this.masterFader = master.fader;
+    this.masterPerformance = master.performance;
     this.masterMeter = meter;
     const gains = effectiveTrackGains(this.project);
     const strips = {} as Record<TrackKind, TrackStrip>;
@@ -288,6 +378,11 @@ export class ToneAudioEngine {
     }
     const position = this.clock.next();
     if (position.switched) this.applyProject();
+    if (position.step === 0 && (this.performancePending.size > 0 || this.dropPending)) {
+      this.applyPendingMutes();
+      if (this.dropPending) this.drop(time);
+      if (!this.options.offline) Tone.getDraw().schedule(() => this.emitPerformance(), time);
+    }
     const plays = this.plannedSteps(position);
     const ducking = this.hasAudibleKick(plays.get("drums"));
     if (ducking) this.triggerDucking(time);
@@ -312,11 +407,14 @@ export class ToneAudioEngine {
     const gains = effectiveTrackGains(this.project);
     for (const track of TRACK_KINDS) {
       const pattern = this.patternFor(position.scene, track);
-      if (!pattern || gains[track] <= 0) continue;
+      if (!pattern || gains[track] <= 0 || this.performanceMuted.has(track) || (this.breakActive && track === "acid")) continue;
       const at = loopPosition(pattern.loopSteps, total);
-      const step = pattern.bars[at.bar]?.steps[at.step];
-      if (!step?.enabled) continue;
-      if (stepChance(step) < 1 && Math.random() >= stepChance(step)) continue;
+      const planned = pattern.bars[at.bar]?.steps[at.step];
+      if (!planned?.enabled) continue;
+      if (stepChance(planned) < 1 && Math.random() >= stepChance(planned)) continue;
+      // The break takes the kick out; the rest of the kit keeps the pulse.
+      const step = this.breakActive && track === "drums" ? { ...planned, drumVoices: planned.drumVoices.filter((voice) => voice !== "kick") } : planned;
+      if (track === "drums" && step.drumVoices.length === 0) continue;
       plays.set(track, { pattern, step, at });
     }
     return plays;
