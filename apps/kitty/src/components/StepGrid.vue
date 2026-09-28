@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref } from "vue";
-import type { TrackPattern } from "../domain/types";
+import { allowsRatchet, stepChance, stepRatchet } from "../domain/patterns";
+import type { Step, TrackPattern } from "../domain/types";
 
 const props = defineProps<{
   pattern: TrackPattern;
@@ -45,10 +46,25 @@ function onKeydown(event: KeyboardEvent, index: number): void {
   }
 }
 
+function outside(bar: number, step: number): boolean {
+  return bar * 16 + step >= (props.pattern.loopSteps ?? 64);
+}
+
+function chance(step: Step): number {
+  return step.enabled ? stepChance(step) : 1;
+}
+
+function hits(step: Step): number {
+  return step.enabled && allowsRatchet(props.pattern.instrument) ? stepRatchet(step) : 1;
+}
+
 function stepLabel(bar: number, step: number): string {
   const current = props.pattern.bars[bar]?.steps[step];
   const state = !current?.enabled ? "aus" : current.dynamics === "accent" ? "Akzent" : current.dynamics === "ghost" ? "leise" : "aktiv";
-  return `Takt ${bar + 1}, Step ${step + 1}, ${state}`;
+  const extras = current
+    ? `${chance(current) < 1 ? `, spielt zu ${Math.round(chance(current) * 100)} %` : ""}${hits(current) > 1 ? `, ${hits(current)} schnelle Wiederholungen` : ""}`
+    : "";
+  return `Takt ${bar + 1}, Step ${step + 1}, ${state}${extras}${outside(bar, step) ? ", außerhalb der Spurlänge" : ""}`;
 }
 </script>
 
@@ -79,6 +95,7 @@ function stepLabel(bar: number, step: number): string {
             selectedBar === barIndex && selectedStep === stepIndex && 'is-selected',
             playing && playheadBar === barIndex && playheadStep === stepIndex && 'is-playing',
             step.slide && 'has-slide',
+            outside(barIndex, stepIndex) && 'is-outside',
           ]"
           :data-bar="barIndex"
           :data-step="stepIndex"
@@ -91,6 +108,8 @@ function stepLabel(bar: number, step: number): string {
         >
           <span class="step-number">{{ stepIndex + 1 }}</span>
           <span v-if="step.enabled" class="step-mark" aria-hidden="true" />
+          <small v-if="chance(step) < 1" class="step-chance" aria-hidden="true">{{ Math.round(chance(step) * 100) }}</small>
+          <small v-if="hits(step) > 1" class="step-ratchet" aria-hidden="true">×{{ hits(step) }}</small>
         </button>
       </div>
       <button

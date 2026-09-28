@@ -1,5 +1,5 @@
 import { createFactoryProject } from "./defaults";
-import { emptyStep, sanitizeDrumVoices } from "./patterns";
+import { allowsRatchet, emptyStep, sanitizeDrumVoices } from "./patterns";
 import type {
   BarPattern,
   GenreProfile,
@@ -17,6 +17,10 @@ import {
   DEFAULT_SCENE_REPEATS,
   DYNAMICS,
   GENRE_PROFILES,
+  LOOP_LENGTHS,
+  RATCHETS,
+  STEP_CHANCES,
+  STEPS_PER_PASS,
   MAX_SWING,
   MAX_TEMPO,
   MIN_TEMPO,
@@ -48,7 +52,7 @@ function sanitizeStep(value: unknown, fallback: Step, track: TrackKind): Step {
   const source = record(value);
   const enabled = typeof source.enabled === "boolean" ? source.enabled : fallback.enabled;
   if (!enabled) return emptyStep();
-  return {
+  const clean: Step = {
     enabled: true,
     drumVoices: track === "drums" ? sanitizeDrumVoices(source.drumVoices, fallback.drumVoices) : [],
     degree: track === "drums" ? 0 : Math.round(finite(source.degree, fallback.degree, 0, 6)),
@@ -57,6 +61,12 @@ function sanitizeStep(value: unknown, fallback: Step, track: TrackKind): Step {
     length: enumValue(source.length, STEP_LENGTHS, fallback.length),
     slide: track === "acid" && (typeof source.slide === "boolean" ? source.slide : fallback.slide),
   };
+  // Optional fields stay absent at their defaults, so older saves and files are unchanged.
+  const probability = STEP_CHANCES.find((chance) => chance === source.probability);
+  if (probability !== undefined && probability < 1) clean.probability = probability;
+  const ratchet = RATCHETS.find((count) => count === source.ratchet);
+  if (ratchet !== undefined && ratchet > 1 && allowsRatchet(track)) clean.ratchet = ratchet;
+  return clean;
 }
 
 function sanitizeBar(value: unknown, fallback: BarPattern, track: TrackKind): BarPattern {
@@ -85,6 +95,9 @@ function sanitizeTrack(value: unknown, fallback: TrackPattern, track: TrackKind)
     instrument: track,
     bars: Array.from({ length: BARS_PER_SCENE }, (_, index) => sanitizeBar(bars[index], fallback.bars[index]!, track)),
     macros: sanitizeMacros(source.macros, fallback.macros),
+    ...(typeof source.loopSteps === "number" && (LOOP_LENGTHS as readonly number[]).includes(source.loopSteps) && source.loopSteps < STEPS_PER_PASS
+      ? { loopSteps: source.loopSteps }
+      : {}),
   };
 }
 

@@ -38,7 +38,8 @@ import type {
   TrackKind,
   VariationAmount,
 } from "./domain/types";
-import { DRUM_VOICES, MACRO_KINDS, ROOT_NOTES, SCALES, SCENE_COUNT, SCENE_REPEATS, TRACK_KINDS, VARIATION_AMOUNTS } from "./domain/types";
+import { DRUM_VOICES, LOOP_LENGTHS, MACRO_KINDS, RATCHETS, ROOT_NOTES, SCALES, SCENE_COUNT, SCENE_REPEATS, STEP_CHANCES, TRACK_KINDS, VARIATION_AMOUNTS } from "./domain/types";
+import { allowsRatchet, loopPosition, sceneSteps, stepChance, stepRatchet } from "./domain/patterns";
 import { KittyProjectRepository, MAX_PROJECTS } from "./storage";
 import { canAddDrumVoice, KittyStore, selectedPattern, selectedStep, type Action } from "./store/store";
 import {
@@ -152,6 +153,9 @@ const dynamicsOptions = [{ value: "ghost", label: "Leise" }, { value: "normal", 
 const lengthOptions = [{ value: "short", label: "Kurz" }, { value: "normal", label: "Normal" }, { value: "long", label: "Lang" }];
 const degreeOptions = DEGREE_LABELS.map((label, value) => ({ value, label }));
 const octaveOptions = [1, 2, 3, 4, 5].map((value) => ({ value, label: `Oktave ${value}` }));
+const chanceOptions = STEP_CHANCES.map((value) => ({ value, label: value === 1 ? "Immer" : `${Math.round(value * 100)} %` }));
+const ratchetOptions = RATCHETS.map((value) => ({ value, label: value === 1 ? "Einmal" : `${value} × schnell` }));
+const loopOptions = LOOP_LENGTHS.map((value) => ({ value, label: Number.isInteger(value / 16) ? `Länge ${value} · ${value / 16} ${value === 16 ? "Takt" : "Takte"}` : `Länge ${value} Steps` }));
 const arcSeconds = computed(() => planSeconds(state.value.project, renderPlan(state.value.project, { kind: "arc" })));
 const exportOptions = computed(() => {
   const { project, ui } = state.value;
@@ -161,6 +165,12 @@ const exportOptions = computed(() => {
     { value: "arc", label: `Ganzer Bogen — alle vier Szenen nacheinander, je ${bars} Takte · ${formatDuration(arcSeconds.value)}` },
     { value: "scene", label: `Nur „${selectedScene.value.name}“ — ${bars} Takte als Loop · ${formatDuration(loop)}` },
   ];
+});
+/** Where the selected track's own loop stands, or `null` when its scene is not playing. */
+const trackPlayhead = computed(() => {
+  const { transport, ui } = state.value;
+  if (!isPlaying.value || transport.runningScene !== ui.selectedScene) return null;
+  return loopPosition(pattern.value.loopSteps, sceneSteps(transport));
 });
 const chainNextScene = computed(() => state.value.ui.sceneChain && isPlaying.value && state.value.transport.queuedScene === null ? (state.value.transport.runningScene + 1) % SCENE_COUNT : null);
 
@@ -187,6 +197,7 @@ const offPlayhead = engine.onPlayhead((event) => {
     queuedScene: event.switched ? null : store.getState().transport.queuedScene,
     bar: event.bar,
     step: event.step,
+    pass: event.pass,
     peak: event.peak,
     trackPeaks: event.trackPeaks,
   } });
@@ -697,6 +708,7 @@ onBeforeUnmount(() => {
             <KvSelect :model-value="state.ui.variationAmount" :options="VARIATION_AMOUNTS.map((value: VariationAmount) => ({ value, label: value === 'subtle' ? 'Dezent' : value === 'lively' ? 'Lebendig' : 'Mutig' }))" aria-label="Stärke der Variation" @update:model-value="dispatch({ type: 'ui/variation-amount', amount: $event as VariationAmount })" />
             <KvButton variant="secondary" size="sm" @click="dispatch({ type: 'track/vary' })">V · Variation</KvButton>
             <KvButton variant="secondary" size="sm" @click="dispatch({ type: 'track/typical' })">R · Typisch</KvButton>
+            <KvSelect class="loop-select" :model-value="pattern.loopSteps ?? 64" :options="loopOptions" aria-label="Spurlänge" title="Kürzere Spuren laufen gegen die vier Takte der Szene weiter und verschieben sich dabei." @update:model-value="dispatch({ type: 'track/loop', value: Number($event) })" />
           </div>
         </div>
         <StepGrid
@@ -704,9 +716,9 @@ onBeforeUnmount(() => {
           :selected-bar="state.ui.selectedBar"
           :selected-step="state.ui.selectedStep"
           :locks="state.ui.locks[selectedTrack]"
-          :playhead-bar="state.transport.bar"
-          :playhead-step="state.transport.step"
-          :playing="isPlaying && state.transport.runningScene === state.ui.selectedScene"
+          :playhead-bar="trackPlayhead?.bar ?? 0"
+          :playhead-step="trackPlayhead?.step ?? 0"
+          :playing="trackPlayhead !== null"
           @press="(bar, stepIndex) => dispatch({ type: 'step/press', bar, step: stepIndex })"
           @select-bar="(bar) => dispatch({ type: 'ui/select-bar', bar })"
           @toggle-lock="(bar) => dispatch({ type: 'ui/toggle-lock', bar })"
@@ -741,6 +753,11 @@ onBeforeUnmount(() => {
             <KvField label="Dynamik"><KvSelect :model-value="step.dynamics" :options="dynamicsOptions" @update:model-value="dispatch({ type: 'step/dynamics', value: $event as 'ghost' | 'normal' | 'accent' })" /></KvField>
             <KvField label="Länge"><KvSelect :model-value="step.length" :options="lengthOptions" @update:model-value="dispatch({ type: 'step/length', value: $event as 'short' | 'normal' | 'long' })" /></KvField>
             <button v-if="selectedTrack === 'acid'" type="button" class="slide-button" role="switch" :aria-checked="step.slide" @click="dispatch({ type: 'step/slide', value: !step.slide })">SLIDE {{ step.slide ? "AN" : "AUS" }}</button>
+          </div>
+          <div v-if="step?.enabled" class="step-extras">
+            <KvField label="Chance"><KvSelect :model-value="stepChance(step)" :options="chanceOptions" @update:model-value="dispatch({ type: 'step/probability', value: Number($event) })" /></KvField>
+            <KvField v-if="allowsRatchet(selectedTrack)" label="Wiederholung"><KvSelect :model-value="stepRatchet(step)" :options="ratchetOptions" @update:model-value="dispatch({ type: 'step/ratchet', value: Number($event) })" /></KvField>
+            <p>Chance würfelt bei jedem Durchlauf neu, Wiederholungen teilen den Step in schnelle Schläge.</p>
           </div>
         </KvCard>
       </section>

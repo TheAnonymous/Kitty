@@ -9,6 +9,14 @@ export const MAX_SWING = 0.35;
 /** Passes of each scene in the scene chain and the arc export: 4, 8 or 16 bars. */
 export const SCENE_REPEATS = [1, 2, 4] as const;
 export const DEFAULT_SCENE_REPEATS = 2;
+export const STEPS_PER_PASS = BARS_PER_SCENE * STEPS_PER_BAR;
+/** How likely an enabled step plays on each pass. */
+export const STEP_CHANCES = [1, 0.75, 0.5, 0.25] as const;
+/** Hits a step splits into (a ratchet of 2–4 fast repeats). */
+export const RATCHETS = [1, 2, 3, 4] as const;
+/** Loop lengths a track can run at against the four-bar scene (polymeter). */
+export const LOOP_LENGTHS = [64, 60, 56, 48, 32, 30, 28, 16, 15, 14, 12] as const;
+export const RATCHET_TRACKS = ["drums", "acid", "stab", "rave"] as const;
 
 export const GENRE_PROFILES = ["hard", "acid", "hybrid"] as const;
 export const TRACK_KINDS = ["drums", "acid", "stab", "rave", "texture"] as const;
@@ -51,6 +59,10 @@ export interface Step {
   dynamics: StepDynamics;
   length: StepLength;
   slide: boolean;
+  /** Chance to play (0.25–0.75); absent means always. */
+  probability?: number;
+  /** Fast repeats within the step (2–4); absent means one hit. */
+  ratchet?: number;
 }
 
 export interface BarPattern { steps: Step[]; }
@@ -67,6 +79,8 @@ export interface TrackPattern {
   instrument: TrackKind;
   bars: BarPattern[];
   macros: TrackMacros;
+  /** Steps before the track loops (12–60); absent means all 64. */
+  loopSteps?: number;
 }
 
 export interface Scene {
@@ -119,6 +133,8 @@ export interface TransportState {
   queuedScene: number | null;
   bar: number;
   step: number;
+  /** Completed passes through the running scene, for tracks with their own loop length. */
+  pass: number;
   peak: number;
   trackPeaks: Record<TrackKind, number>;
   message: string;

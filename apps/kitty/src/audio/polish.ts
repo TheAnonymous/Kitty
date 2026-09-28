@@ -137,11 +137,12 @@ export function acidLegatoContext(
   bars: readonly { steps: readonly Step[] }[],
   bar: number,
   step: number,
+  loopSteps = bars.length * 16,
 ): AcidLegatoContext {
   const currentIndex = bar * 16 + step;
   const current = stepAt(bars, currentIndex);
   const previous = currentIndex > 0 ? stepAt(bars, currentIndex - 1) : undefined;
-  const next = currentIndex < bars.length * 16 - 1 ? stepAt(bars, currentIndex + 1) : undefined;
+  const next = currentIndex < Math.min(loopSteps, bars.length * 16) - 1 ? stepAt(bars, currentIndex + 1) : undefined;
   return {
     legato: Boolean(current?.enabled && current.slide && previous?.enabled),
     continues: Boolean(current?.enabled && next?.enabled && next.slide),

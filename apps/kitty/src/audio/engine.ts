@@ -2,7 +2,8 @@ import * as Tone from "tone";
 import { createFactoryProject } from "../domain/defaults";
 import { scaleChord, scaleDegreeMidi } from "../domain/music";
 import { acidStepParameters, presetDefinition, safeEffectParameters } from "../domain/sound-presets";
-import type { DrumVoice, ProjectV1, SoundPresetId, SoundPresetMap, Step, TrackKind, TrackMacros } from "../domain/types";
+import { allowsRatchet, loopPosition, sceneSteps, stepChance, stepRatchet } from "../domain/patterns";
+import type { DrumVoice, ProjectV1, SoundPresetId, SoundPresetMap, Step, TrackKind, TrackMacros, TrackPattern } from "../domain/types";
 import { SOUND_PRESETS, TRACK_KINDS } from "../domain/types";
 import { effectiveTrackGains } from "../store/store";
 import {
@@ -41,6 +42,12 @@ interface PeakMeter {
   node: AnalyserNode;
   getValue(): number;
   dispose(): void;
+}
+
+interface PlannedStep {
+  pattern: TrackPattern;
+  step: Step;
+  at: { bar: number; step: number };
 }
 
 interface VoiceBank {
@@ -281,10 +288,11 @@ export class ToneAudioEngine {
     }
     const position = this.clock.next();
     if (position.switched) this.applyProject();
-    const ducking = this.hasAudibleKick(position);
+    const plays = this.plannedSteps(position);
+    const ducking = this.hasAudibleKick(plays.get("drums"));
     if (ducking) this.triggerDucking(time);
-    const acidLegato = this.hasAcidLegato(position);
-    const triggeredTracks = TRACK_KINDS.filter((track) => this.triggerTrack(track, position, time));
+    const acidLegato = this.hasAcidLegato(plays.get("acid"));
+    const triggeredTracks = TRACK_KINDS.filter((track) => this.triggerTrack(track, plays.get(track), position, time));
     if (this.options.offline) return;
     const chainNext = this.clock.chainNext;
     Tone.getDraw().schedule(() => {
@@ -293,38 +301,61 @@ export class ToneAudioEngine {
     }, time);
   }
 
-  private triggerTrack(track: TrackKind, position: SequencerPosition, time: number): boolean {
-    const pattern = this.patternFor(position.scene, track);
-    const step = pattern?.bars[position.bar]?.steps[position.step];
-    if (!pattern || !step?.enabled || effectiveTrackGains(this.project)[track] <= 0) return false;
+  /**
+   * What each track plays this sixteenth: its own loop position (tracks with a
+   * shorter loop run on against the scene) and one chance roll, which ducking,
+   * the acid legato hint and the trigger then share.
+   */
+  private plannedSteps(position: SequencerPosition): Map<TrackKind, PlannedStep> {
+    const plays = new Map<TrackKind, PlannedStep>();
+    const total = sceneSteps(position);
+    const gains = effectiveTrackGains(this.project);
+    for (const track of TRACK_KINDS) {
+      const pattern = this.patternFor(position.scene, track);
+      if (!pattern || gains[track] <= 0) continue;
+      const at = loopPosition(pattern.loopSteps, total);
+      const step = pattern.bars[at.bar]?.steps[at.step];
+      if (!step?.enabled) continue;
+      if (stepChance(step) < 1 && Math.random() >= stepChance(step)) continue;
+      plays.set(track, { pattern, step, at });
+    }
+    return plays;
+  }
+
+  private triggerTrack(track: TrackKind, play: PlannedStep | undefined, position: SequencerPosition, time: number): boolean {
+    if (!play) return false;
+    const { pattern, step, at } = play;
     const preset = this.project.soundPresets[track];
     const strip = this.strips?.[track];
     if (!strip) return false;
     this.activePresets[track] = preset;
     this.applyMacros(strip, pattern.macros, track, preset, track === "acid" && step.dynamics === "accent", time);
-    const velocity = clamp01(dynamicsVelocity(step) * (0.78 + pattern.macros.density * 0.2) * positionalVelocity(position.bar, position.step));
+    const velocity = clamp01(dynamicsVelocity(step) * (0.78 + pattern.macros.density * 0.2) * positionalVelocity(at.bar, at.step));
     const bank = this.bankFor(track);
-    const legato = track === "acid" ? acidLegatoContext(pattern.bars, position.bar, position.step) : { legato: false, continues: false };
+    const hits = allowsRatchet(track) ? stepRatchet(step) : 1;
+    const legato = track === "acid" && hits === 1 ? acidLegatoContext(pattern.bars, at.bar, at.step, pattern.loopSteps) : { legato: false, continues: false };
     const context: TriggerContext = {
       tempo: this.tempo,
       scene: position.scene,
-      bar: position.bar,
-      step: position.step,
+      bar: at.bar,
+      step: at.step,
       legato: legato.legato,
       continuesLegato: legato.continues,
     };
-    if (track === "drums") {
-      bank.trigger([], step, time, velocity, pattern.macros, context);
+    const notes = track === "drums" ? []
+      : track === "stab" ? stabVoicing(preset as SoundPresetMap["stab"], scaleChord(this.project.root, this.project.scale, step.degree, step.octave))
+        : [scaleDegreeMidi(this.project.root, this.project.scale, step.degree, step.octave)];
+    const triggerTime = time + (track === "drums" ? 0 : performanceOffsetSeconds(track));
+    if (hits === 1) {
+      bank.trigger(notes, step, triggerTime, velocity, pattern.macros, context);
       return true;
     }
-    const note = scaleDegreeMidi(this.project.root, this.project.scale, step.degree, step.octave);
-    const triggerTime = time + performanceOffsetSeconds(track);
-    if (track === "stab") {
-      const chord = scaleChord(this.project.root, this.project.scale, step.degree, step.octave);
-      bank.trigger(stabVoicing(preset as SoundPresetMap["stab"], chord), step, triggerTime, velocity, pattern.macros, context);
-      return true;
+    // A ratchet splits the sixteenth into even, slightly softer repeats with short notes.
+    const spacing = 15 / this.tempo / hits;
+    const short: Step = { ...step, length: "short", slide: false };
+    for (let hit = 0; hit < hits; hit += 1) {
+      bank.trigger(notes, short, triggerTime + hit * spacing, velocity * (hit === 0 ? 1 : 0.84), pattern.macros, context);
     }
-    bank.trigger([note], step, triggerTime, velocity, pattern.macros, context);
     return true;
   }
 
@@ -343,15 +374,12 @@ export class ToneAudioEngine {
   private patternFor(scene: number, track: TrackKind) { return this.project.scenes[scene]?.tracks.find((entry) => entry.instrument === track); }
   private releaseAll(): void { for (const bank of this.banks.values()) bank.release(); }
 
-  private hasAudibleKick(position: SequencerPosition): boolean {
-    const step = this.patternFor(position.scene, "drums")?.bars[position.bar]?.steps[position.step];
-    return Boolean(step?.enabled && step.drumVoices.includes("kick") && effectiveTrackGains(this.project).drums > 0);
+  private hasAudibleKick(play: PlannedStep | undefined): boolean {
+    return Boolean(play?.step.drumVoices.includes("kick"));
   }
 
-  private hasAcidLegato(position: SequencerPosition): boolean {
-    const pattern = this.patternFor(position.scene, "acid");
-    const step = pattern?.bars[position.bar]?.steps[position.step];
-    return Boolean(pattern && step?.enabled && effectiveTrackGains(this.project).acid > 0 && acidLegatoContext(pattern.bars, position.bar, position.step).legato);
+  private hasAcidLegato(play: PlannedStep | undefined): boolean {
+    return Boolean(play && stepRatchet(play.step) === 1 && acidLegatoContext(play.pattern.bars, play.at.bar, play.at.step, play.pattern.loopSteps).legato);
   }
 
   private triggerDucking(time: number): void {

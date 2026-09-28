@@ -1,5 +1,5 @@
 import { createTransportState, createUiState } from "../domain/defaults";
-import { activateStep, emptyStep, replaceWithTypical, sanitizeDrumVoices, varyPattern } from "../domain/patterns";
+import { activateStep, allowsRatchet, emptyStep, replaceWithTypical, sanitizeDrumVoices, varyPattern } from "../domain/patterns";
 import { sanitizeProject } from "../domain/sanitize";
 import type {
   AppState,
@@ -15,7 +15,7 @@ import type {
   TrackKind,
   VariationAmount,
 } from "../domain/types";
-import { MAX_SWING, MAX_TEMPO, MIN_TEMPO, SCENE_REPEATS, SOUND_PRESETS } from "../domain/types";
+import { LOOP_LENGTHS, MAX_SWING, MAX_TEMPO, MIN_TEMPO, RATCHETS, SCENE_REPEATS, SOUND_PRESETS, STEP_CHANCES, STEPS_PER_PASS } from "../domain/types";
 
 export type Action =
   | { type: "ui/select-scene"; scene: number }
@@ -45,6 +45,9 @@ export type Action =
   | { type: "step/dynamics"; value: StepDynamics }
   | { type: "step/length"; value: StepLength }
   | { type: "step/slide"; value: boolean }
+  | { type: "step/probability"; value: number }
+  | { type: "step/ratchet"; value: number }
+  | { type: "track/loop"; value: number }
   | { type: "track/macro"; macro: MacroKind; value: number }
   | { type: "track/vary" }
   | { type: "track/typical" }
@@ -166,6 +169,30 @@ export class KittyStore {
       case "step/dynamics": { const step = selectedStep(this.state); return step?.enabled ? assign(step, "dynamics", action.value) : false; }
       case "step/length": { const step = selectedStep(this.state); return step?.enabled ? assign(step, "length", action.value) : false; }
       case "step/slide": { const step = selectedStep(this.state); return step?.enabled && ui.selectedTrack === "acid" ? assign(step, "slide", action.value) : false; }
+      case "step/probability": {
+        const step = selectedStep(this.state);
+        if (!step?.enabled || !(STEP_CHANCES as readonly number[]).includes(action.value)) return false;
+        if ((step.probability ?? 1) === action.value) return false;
+        if (action.value >= 1) delete step.probability;
+        else step.probability = action.value;
+        return true;
+      }
+      case "step/ratchet": {
+        const step = selectedStep(this.state);
+        if (!step?.enabled || !allowsRatchet(ui.selectedTrack) || !(RATCHETS as readonly number[]).includes(action.value)) return false;
+        if ((step.ratchet ?? 1) === action.value) return false;
+        if (action.value <= 1) delete step.ratchet;
+        else step.ratchet = action.value;
+        return true;
+      }
+      case "track/loop": {
+        const pattern = selectedPattern(this.state);
+        if (!pattern || !(LOOP_LENGTHS as readonly number[]).includes(action.value)) return false;
+        if ((pattern.loopSteps ?? STEPS_PER_PASS) === action.value) return false;
+        if (action.value >= STEPS_PER_PASS) delete pattern.loopSteps;
+        else pattern.loopSteps = action.value;
+        return true;
+      }
       case "track/macro": { const pattern = selectedPattern(this.state); return pattern ? assign(pattern.macros, action.macro, clampNumber(action.value, 0, 1)) : false; }
       case "track/vary": { const pattern = selectedPattern(this.state); return pattern ? varyPattern(pattern, ui.variationAmount, ui.locks[ui.selectedTrack]) : false; }
       case "track/typical": { const pattern = selectedPattern(this.state); const scene = project.scenes[ui.selectedScene]; return pattern && scene ? replaceWithTypical(pattern, project.profile, scene.role, ui.locks[ui.selectedTrack]) : false; }
