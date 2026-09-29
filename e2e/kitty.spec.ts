@@ -477,3 +477,14 @@ test("startet und stoppt zwei gekoppelte Tabs im Gleichtakt", async ({ page }) =
   await expect(page.locator(".link-led")).toHaveAttribute("data-state", "waiting");
   await partner.close();
 });
+
+test("declares its sound as playback on Apple devices, so the ring/silent switch does not mute it", async ({ page }) => {
+  // Safari's audio session (iOS 17+); Chromium has none, so the test gives the page one.
+  await page.addInitScript(() => { Object.defineProperty(navigator, "audioSession", { value: { type: "auto" }, configurable: true }); });
+  await page.reload();
+  const sessionType = () => page.evaluate(() => (navigator as Navigator & { audioSession: { type: string } }).audioSession.type);
+  expect(await sessionType()).toBe("auto");
+  await page.getByRole("button", { name: /START/ }).click();
+  await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
+  expect(await sessionType()).toBe("playback");
+});

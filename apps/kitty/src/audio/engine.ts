@@ -31,6 +31,7 @@ import { DetuneSource, FmVoice, LeanEnvelope, LeanTone, NoiseVoice, OneShotTone,
 import { BarQueuedTransport, type SequencerPosition } from "./transport";
 import type { PerformanceFilter } from "./performance";
 import { MasterRecorder, type Recording } from "./recorder";
+import { playThroughSilentSwitch } from "./ios-audio";
 
 export interface AudioStatusEvent { status: "idle" | "starting" | "playing" | "suspended" | "error"; message: string; }
 export interface PlayheadEvent extends SequencerPosition { peak: number; trackPeaks: Record<TrackKind, number>; triggeredTracks: TrackKind[]; ducking: boolean; acidLegato: boolean; chainNext: number | null; }
@@ -135,6 +136,8 @@ export class ToneAudioEngine {
     // Already prepared (e.g. recording or MIDI while music plays): report nothing new.
     if (this.initialized && Tone.getContext().state === "running") return;
     this.emitStatus("starting", "Audio wird vorbereitet …");
+    // iPhones and iPads: play even with the ring/silent switch on silent (live sound only).
+    if (!this.options.offline) playThroughSilentSwitch();
     await Tone.start();
     if (!this.initialized) {
       this.graphReady ??= this.createGraph().finally(() => { this.graphReady = null; });
