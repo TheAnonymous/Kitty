@@ -16,7 +16,7 @@ test("lädt ohne Fehler, spielt und stoppt", async ({ page }) => {
   page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
   await page.getByRole("button", { name: /START/ }).click();
   await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
-  await expect(page.locator("main.kitty-shell")).toHaveAttribute("data-triggered-tracks", /drums/, { timeout: 10_000 });
+  await expect(page.locator(".kitty-shell")).toHaveAttribute("data-triggered-tracks", /drums/, { timeout: 10_000 });
   await expect(page.locator(".kitty-step.is-playing")).toHaveCount(1);
   await page.getByRole("button", { name: /STOP/ }).click();
   await expect(page.getByRole("button", { name: /START/ })).toBeVisible();

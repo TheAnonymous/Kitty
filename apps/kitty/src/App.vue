@@ -11,9 +11,7 @@ import {
   KvInput,
   KvRadioGroup,
   KvSelect,
-  KvSlider,
   KvSwitch,
-  KvTooltip,
   useKvToast,
 } from "@kinky-vibes/ui";
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
@@ -27,6 +25,9 @@ import { Tour, type TourStep } from "./tour";
 import { PlaybackWakeLock } from "./wake-lock";
 import { versionLabel } from "./version";
 import StepGrid from "./components/StepGrid.vue";
+import UnitSlider from "./components/UnitSlider.vue";
+import { vHint } from "./hint";
+import { DRUM_LABELS, DRUM_SHORT, percentLabel } from "./labels";
 import { PROFILE_DEFINITIONS } from "./domain/defaults";
 import { DEGREE_LABELS, ROOT_LABELS, SCALE_LABELS } from "./domain/music";
 import { SOUND_PRESET_DEFINITIONS } from "./domain/sound-presets";
@@ -79,24 +80,27 @@ const MACRO_HINTS: Record<TrackKind, Record<MacroKind, string>> = {
 const TOUR_STEPS: readonly TourStep[] = [
   { target: ".start-button", title: "Start und Stop", text: "Mit Start oder der Leertaste läuft das Werksprojekt sofort. Alle Klänge entstehen live im Browser." },
   { target: ".scene-strip", title: "Vier Szenen", text: "Aufwärmen, Druck, Break und Peak. Eine gewählte Szene übernimmt am nächsten Takt, der Groove reißt nicht ab." },
-  { target: ".sequencer-panel", title: "Spuren und Steps", text: "Links wählst du eine der fünf Spuren, im Raster setzt du Steps. V baut eine Variation, R ein typisches Pattern; ein Schloss schützt einen Takt." },
+  { target: ".sequencer-panel", title: "Spuren und Steps", text: "Links wählst du eine der fünf Spuren, im Raster setzt du Steps; ein zweiter Klick schaltet sie wieder aus. V baut eine Variation, R ein typisches Pattern; ein Schloss schützt einen Takt." },
   { target: ".arrangement", title: "Vom Loop zum Track", text: "Die Szenenfolge spielt alle Szenen nacheinander. Exportiere das Ergebnis als WAV oder teile es als Link. Mit ? findest du Tastenkürzel und diese Tour wieder." },
 ];
 const SHORTCUTS: readonly [string[], string][] = [
   [["Leertaste"], "Start und Stop"],
   [["1 – 5"], "Spur wählen: Drums, Acid, Stab, Rave, FX"],
   [["Umschalt", "1 – 4"], "Szene wählen; läuft Musik, wechselt sie am nächsten Takt"],
+  [["Pfeiltasten"], "Im Step-Raster von Step zu Step"],
+  [["Enter"], "Step setzen; auf dem gewählten Step schaltet es ihn aus"],
+  [["Entf"], "Step im Raster ausschalten"],
   [["V"], "Variation in der gewählten Stärke"],
   [["R"], "Typisches Pattern für Spur und Profil"],
   [["A"], "Aufnahme starten und beenden"],
   [["P"], "Live-Tasten: 1 – 5 schalten Spuren am nächsten Takt stumm"],
   [["F halten"], "Filter zu (Tiefpass), mit Umschalt auf (Hochpass)"],
-  [["B halten"], "Break: Kick und Acid raus; loslassen: Drop am nächsten Takt"],
+  [["B halten"], "Break: Kick und Acid raus; loslassen: Drop am nächsten Takt. Am Button rastet kurzes Tippen ein"],
+  [["Esc"], "Dialog oder Hinweis schließen"],
   [["Strg", "Z"], "Rückgängig"],
   [["Strg", "Umschalt", "Z"], "Wiederholen"],
   [["?"], "Diese Hilfe"],
 ];
-const DRUM_LABELS: Record<DrumVoice, string> = { kick: "Kick", snare: "Snare", clap: "Clap", closedHat: "Closed Hat", openHat: "Open Hat", tom: "Tom" };
 const repository = new KittyProjectRepository();
 const loaded = repository.load();
 const store = new KittyStore(loaded.project);
@@ -165,6 +169,19 @@ const midi = new MidiLink("kitty.midi.v1", {
 });
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let audioDisposed = false;
+const PREVIEW_KEY = "kitty.preview.v1";
+const FULL_UI_KEY = "kitty.full-ui.v1";
+const stepGrid = ref<InstanceType<typeof StepGrid> | null>(null);
+/** Plays a step once when it is set or changed while the music is stopped. */
+const preview = ref(readPreference(PREVIEW_KEY) !== "off");
+/** The full interface in a narrow window (a zoomed desktop, a small tablet) instead of the hint page. */
+const fullUi = ref(readPreference(FULL_UI_KEY) === "on");
+document.documentElement.toggleAttribute("data-full-ui", fullUi.value);
+/** When the break button went down, and whether that press started the break (a short tap then latches it). */
+let breakPressedAt = 0;
+let breakFromIdle = false;
+/** The control last pressed with a pointer: Space there is Start/Stop, not a second press. */
+let pointerControl: Element | null = null;
 
 const pattern = computed(() => selectedPattern(state.value)!);
 const step = computed(() => selectedStep(state.value));
@@ -177,7 +194,7 @@ const rootOptions = ROOT_NOTES.map((value) => ({ value, label: ROOT_LABELS[value
 const scaleOptions = SCALES.map((value) => ({ value, label: SCALE_LABELS[value] }));
 const dynamicsOptions = [{ value: "ghost", label: "Leise" }, { value: "normal", label: "Normal" }, { value: "accent", label: "Akzent" }];
 const lengthOptions = [{ value: "short", label: "Kurz" }, { value: "normal", label: "Normal" }, { value: "long", label: "Lang" }];
-const degreeOptions = DEGREE_LABELS.map((label, value) => ({ value, label }));
+const degreeOptions = DEGREE_LABELS.map((label, value) => ({ value, label: `${value + 1} · ${label}` }));
 const octaveOptions = [1, 2, 3, 4, 5].map((value) => ({ value, label: `Oktave ${value}` }));
 const chanceOptions = STEP_CHANCES.map((value) => ({ value, label: value === 1 ? "Immer" : `${Math.round(value * 100)} %` }));
 const ratchetOptions = RATCHETS.map((value) => ({ value, label: value === 1 ? "Einmal" : `${value} × schnell` }));
@@ -198,6 +215,10 @@ const trackPlayhead = computed(() => {
   if (!isPlaying.value || transport.runningScene !== ui.selectedScene) return null;
   return loopPosition(pattern.value.loopSteps, sceneSteps(transport));
 });
+const gridLegend = computed(() => selectedTrack.value === "drums"
+  ? DRUM_VOICES.map((voice) => `${DRUM_SHORT[voice]} ${DRUM_LABELS[voice]}`).join(" · ")
+  : `Zahl = Tonstufe: ${DEGREE_LABELS.map((label, index) => `${index + 1} ${label}`).join(" · ")}`);
+const projectsFull = computed(() => projects.value.length >= MAX_PROJECTS);
 const chainNextScene = computed(() => state.value.ui.sceneChain && isPlaying.value && state.value.transport.queuedScene === null ? (state.value.transport.runningScene + 1) % SCENE_COUNT : null);
 
 const unsubscribe = store.subscribe((next, action) => {
@@ -323,6 +344,22 @@ const linkTitle = computed(() => {
   if (linkPeers.value.length === 0) return "Gleichtakt an – öffne die Groovebox in einem zweiten Tab und schalte dort Gleichtakt ein";
   return `Gleichtakt mit ${[...new Set(linkPeers.value.map((peer) => appName(peer.app)))].join(", ")}: wer startet, gibt das Tempo vor`;
 });
+
+const MIDI_STATES: Record<MidiStatus["state"], string> = { unsupported: "nicht verfügbar", off: "nicht verbunden", connecting: "verbindet …", ready: "verbunden", denied: "vom Browser abgelehnt", error: "ließ sich nicht öffnen" };
+const midiHint = computed(() => {
+  const { state: midiState, inputs } = midiStatus.value;
+  const devices = midiState === "ready" ? (inputs.length > 0 ? `: ${inputs.join(", ")}` : ", noch kein Gerät") : "";
+  return `MIDI-Controller und MIDI-Clock · ${MIDI_STATES[midiState]}${devices}`;
+});
+
+const filterText = computed(() => {
+  const value = Math.round(filterValue.value * 100);
+  return value === 0 ? "offen" : value < 0 ? `Tiefpass ${-value} %` : `Hochpass ${value} %`;
+});
+
+function mixFor(track: TrackKind) {
+  return state.value.project.mix.find((entry) => entry.instrument === track);
+}
 
 function selectScene(scene: number): void {
   dispatch({ type: "ui/select-scene", scene });
@@ -464,7 +501,7 @@ function exportProject(): void {
 }
 
 async function importFile(file: File): Promise<void> {
-  if (window.matchMedia("(max-width: 1023px)").matches) return;
+  if (compactView()) return;
   try {
     const imported = parseProjectFile(await file.text(), nameFromFileName(file.name));
     currentProjectBeforeSwitch();
@@ -559,7 +596,7 @@ async function copyShareUrl(): Promise<void> {
 
 async function offerSharedFragment(): Promise<void> {
   if (!window.location.hash.startsWith("#p=")) return;
-  if (window.matchMedia("(max-width: 1023px)").matches) { sharedOnPhone.value = true; return; }
+  if (compactView()) { sharedOnPhone.value = true; return; }
   try {
     const imported = await decodeShareFragment(window.location.hash);
     if (!imported) return;
@@ -606,34 +643,99 @@ function deleteProject(): void {
   catch (error) { toast.toast({ title: "Löschen fehlgeschlagen", description: errorMessage(error), status: "error" }); }
 }
 
+function readPreference(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function writePreference(key: string, value: string): void {
+  try { localStorage.setItem(key, value); } catch { /* Kept for this visit only. */ }
+}
+
+watch(preview, (on) => writePreference(PREVIEW_KEY, on ? "on" : "off"));
+watch(fullUi, (on) => {
+  writePreference(FULL_UI_KEY, on ? "on" : "off");
+  document.documentElement.toggleAttribute("data-full-ui", on);
+});
+
+/** Narrow windows get the hint page, unless someone chose the full interface there. */
+function compactView(): boolean {
+  return !fullUi.value && window.matchMedia("(max-width: 1023px)").matches;
+}
+
+function openFullUi(): void {
+  fullUi.value = true;
+  void offerSharedFragment();
+}
+
+function pressStep(bar: number, index: number): void {
+  dispatch({ type: "step/press", bar, step: index });
+  auditionSelected();
+}
+
+function clearStep(bar: number, index: number): void {
+  dispatch({ type: "step/clear", bar, step: index });
+}
+
+/** A change to the selected step, which is then heard once while the music is stopped. */
+function editStep(action: Action): void {
+  dispatch(action);
+  auditionSelected();
+}
+
+function auditionSelected(): void {
+  const { ui, transport } = store.getState();
+  if (!preview.value || ui.selectedStep === null || transport.status === "playing" || transport.status === "starting") return;
+  void engine.audition(ui.selectedScene, ui.selectedTrack, ui.selectedBar, ui.selectedStep);
+}
+
+function focusStepGrid(): void {
+  stepGrid.value?.focusGrid();
+}
+
+function openNewDialog(): void {
+  // With every place taken, the project list says what to do instead.
+  if (projectsFull.value) projectsDialog.value = true;
+  else newDialog.value = true;
+}
+
 function drumDisabled(voice: DrumVoice): boolean {
   return Boolean(step.value?.enabled && !step.value.drumVoices.includes(voice) && !canAddDrumVoice(step.value.drumVoices, voice));
 }
 
 function onShortcut(event: KeyboardEvent): void {
+  // The step grid and other controls handle their own keys first.
+  if (event.defaultPrevented) return;
   const target = event.target as HTMLElement | null;
   if (target?.closest("[role='dialog'], .kitty-tour")) return;
-  const typing = Boolean(target?.matches("input, select, textarea, [contenteditable='true']"));
-  if (event.key === "?" && !typing) { event.preventDefault(); helpDialog.value = true; return; }
-  // Live keys work on top of a focused button as well; they never type into fields.
-  if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey) {
-    const live = event.key.toLowerCase();
-    if (live === "a") { event.preventDefault(); if (!event.repeat) void toggleRecording(); return; }
-    if (live === "p") { event.preventDefault(); if (!event.repeat) liveKeys.value = !liveKeys.value; return; }
-    if (live === "b") { event.preventDefault(); if (!event.repeat) engine.setBreak(true); return; }
-    if (live === "f") { event.preventDefault(); if (!event.repeat) glideFilter(event.shiftKey ? 0.85 : -0.85, 1.4); return; }
-    if (liveKeys.value && !event.shiftKey && /^[1-5]$/.test(event.key)) { event.preventDefault(); togglePerformanceMute(TRACK_KINDS[Number(event.key) - 1]!); return; }
-  }
-  if (target?.matches("input, select, textarea, button, [contenteditable='true']")) return;
+  // Fields that take letters and digits keep them; sliders, buttons and the page pass them on.
+  if (target?.matches("select, textarea, [contenteditable='true'], input:not([type='range'])")) return;
   const key = event.key.toLowerCase();
+  if (event.key === "?") { event.preventDefault(); helpDialog.value = true; return; }
   if ((event.ctrlKey || event.metaKey) && key === "z") { event.preventDefault(); dispatch({ type: event.shiftKey ? "history/redo" : "history/undo" }); return; }
   if ((event.ctrlKey || event.metaKey) && key === "y") { event.preventDefault(); dispatch({ type: "history/redo" }); return; }
-  if (event.code === "Space") { event.preventDefault(); void toggleTransport(); return; }
-  const number = Number(event.key);
-  if (event.shiftKey && number >= 1 && number <= 4) { event.preventDefault(); selectScene(number - 1); return; }
-  if (!event.shiftKey && number >= 1 && number <= 5) { event.preventDefault(); dispatch({ type: "ui/select-track", track: TRACK_KINDS[number - 1]! }); return; }
-  if (key === "v") { event.preventDefault(); dispatch({ type: "track/vary" }); }
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.code === "Space") {
+    // A control reached with the keyboard keeps its own Space; after a click, Space is Start/Stop.
+    if (target?.matches("button, a, [role='button'], [role='switch']") && target !== pointerControl) return;
+    event.preventDefault();
+    if (!event.repeat) void toggleTransport();
+    return;
+  }
+  if (key === "a") { event.preventDefault(); if (!event.repeat) void toggleRecording(); return; }
+  if (key === "p") { event.preventDefault(); if (!event.repeat) liveKeys.value = !liveKeys.value; return; }
+  if (key === "b") { event.preventDefault(); if (!event.repeat) engine.setBreak(true); return; }
+  if (key === "f") { event.preventDefault(); if (!event.repeat) glideFilter(event.shiftKey ? 0.85 : -0.85, 1.4); return; }
+  // Shift turns the digits into symbols on most layouts; the physical key still names the number.
+  const digit = /^[1-9]$/.test(event.key) ? Number(event.key) : Number(/^(?:Digit|Numpad)([1-9])$/.exec(event.code)?.[1] ?? Number.NaN);
+  if (liveKeys.value && !event.shiftKey && digit >= 1 && digit <= 5) { event.preventDefault(); togglePerformanceMute(TRACK_KINDS[digit - 1]!); return; }
+  if (event.shiftKey && digit >= 1 && digit <= 4) { event.preventDefault(); selectScene(digit - 1); return; }
+  if (!event.shiftKey && digit >= 1 && digit <= 5) { event.preventDefault(); dispatch({ type: "ui/select-track", track: TRACK_KINDS[digit - 1]! }); return; }
+  if (key === "v") { event.preventDefault(); dispatch({ type: "track/vary" }); return; }
   if (key === "r") { event.preventDefault(); dispatch({ type: "track/typical" }); }
+}
+
+function onPointerDownCapture(event: PointerEvent): void {
+  pointerControl = (event.target as Element | null)?.closest("button, a, input, [role='button'], [role='switch']") ?? null;
 }
 
 /** B and F are held; their release belongs to the key-up. */
@@ -650,6 +752,28 @@ function onWindowBlur(): void {
 
 function releaseBreak(): void {
   if (liveState.value.breakActive && !liveState.value.dropPending) engine.setBreak(false);
+}
+
+function onBreakDown(event: PointerEvent): void {
+  if (event.button !== 0) return;
+  breakPressedAt = performance.now();
+  breakFromIdle = !liveState.value.breakActive;
+  if (breakFromIdle) engine.setBreak(true);
+  (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+}
+
+/** Holding plays break and drop; a short tap latches the break until the next tap. */
+function onBreakUp(): void {
+  const tapped = breakFromIdle && performance.now() - breakPressedAt < 300;
+  breakFromIdle = false;
+  if (!tapped) releaseBreak();
+}
+
+/** Enter or Space on the focused button: break on, and on the next press the drop. */
+function onBreakClick(event: MouseEvent): void {
+  if (event.detail !== 0) return;
+  if (liveState.value.breakActive) releaseBreak();
+  else engine.setBreak(true);
 }
 
 function togglePerformanceMute(track: TrackKind): void {
@@ -754,6 +878,7 @@ function disposeAudio(): void {
 
 onMounted(() => {
   window.addEventListener("keydown", onShortcut);
+  window.addEventListener("pointerdown", onPointerDownCapture, true);
   window.addEventListener("keyup", onLiveKeyUp);
   window.addEventListener("blur", onWindowBlur);
   window.addEventListener("pagehide", disposeAudio);
@@ -763,8 +888,7 @@ onMounted(() => {
   window.addEventListener("hashchange", onHashChange);
   void offerSharedFragment();
   void midi.restore();
-  const desktop = !window.matchMedia("(max-width: 1023px)").matches;
-  if (desktop && tour.pending && !window.location.hash.startsWith("#p=")) requestAnimationFrame(() => tour.start());
+  if (!compactView() && tour.pending && !window.location.hash.startsWith("#p=")) requestAnimationFrame(() => tour.start());
   if (loaded.warning) toast.toast({ title: "Sicherung geladen", description: loaded.warning, status: "warning", duration: 8000 });
 });
 
@@ -774,6 +898,7 @@ onBeforeUnmount(() => {
   clearInterval(recordingTimer);
   cancelFilterGlide();
   window.removeEventListener("keydown", onShortcut);
+  window.removeEventListener("pointerdown", onPointerDownCapture, true);
   window.removeEventListener("keyup", onLiveKeyUp);
   window.removeEventListener("blur", onWindowBlur);
   window.removeEventListener("pagehide", disposeAudio);
@@ -806,251 +931,270 @@ onBeforeUnmount(() => {
       <a class="desktop-gate__link" href="/">Zur Musik-Werkstatt</a>
     </div>
     <p v-if="shareFeedback" class="desktop-gate__feedback" role="status">{{ shareFeedback }}</p>
+    <div class="desktop-gate__full">
+      <p>Hast du die Seite am Laptop nur vergrößert, oder willst du es trotzdem probieren? Die volle Oberfläche lässt sich dann seitlich scrollen.</p>
+      <KvButton variant="secondary" data-open-full-ui @click="openFullUi">Volle Oberfläche trotzdem öffnen</KvButton>
+    </div>
   </section>
 
-  <main class="kitty-shell" :data-triggered-tracks="triggeredTracks.join(',')" :data-audio-ducking="ducking ? 'active' : 'idle'" :data-acid-legato="acidLegato ? 'active' : 'idle'">
+  <div class="kitty-shell" :data-triggered-tracks="triggeredTracks.join(',')" :data-audio-ducking="ducking ? 'active' : 'idle'" :data-acid-legato="acidLegato ? 'active' : 'idle'">
+    <a class="skip-link" href="#step-grid" @click.prevent="focusStepGrid">Zum Step-Raster springen</a>
     <header class="topbar">
       <div class="brand-block">
         <span class="brand-mark" aria-hidden="true">K</span>
         <div>
-          <p class="eyebrow"><a class="home-link" href="/" title="Zurück zur Musik-Werkstatt">← Musik-Werkstatt</a> · HARD / ACID GROOVEBOX</p>
+          <p class="eyebrow"><a v-hint="'Zurück zur Übersicht der Musik-Werkstatt'" class="home-link" href="/"><span aria-hidden="true">← </span>Musik-Werkstatt</a> · HARD / ACID GROOVEBOX</p>
           <h1>KITTY</h1>
         </div>
       </div>
       <div class="project-head">
         <span class="project-name">{{ active.name }}</span>
         <KvBadge status="info">{{ PROFILE_DEFINITIONS[state.project.profile].label }}</KvBadge>
-        <span class="save-state" data-save-status role="status">
+        <span class="save-state" data-save-status>
           {{ state.autosave === "saving" ? "speichert …" : state.autosave === "saved" ? "gespeichert" : state.autosave === "error" ? "Speicherfehler" : "lokal" }}
         </span>
         <KvButton variant="secondary" size="sm" @click="projectsDialog = true">Projekte</KvButton>
-        <KvButton size="sm" :disabled="projects.length >= MAX_PROJECTS" @click="newDialog = true">Neu</KvButton>
-        <button v-if="AppLink.supported()" type="button" class="head-button" :aria-pressed="linkOn" :title="linkTitle" @click="toggleLink"><i class="link-led" :data-state="!linkOn ? 'off' : linkPeers.length > 0 ? 'linked' : 'waiting'" aria-hidden="true" />GLEICHTAKT</button>
-        <button v-if="midiStatus.state !== 'unsupported'" type="button" class="head-button" title="MIDI-Controller und MIDI-Clock verbinden" @click="midiDialog = true"><i class="midi-led" :data-state="midiStatus.state" aria-hidden="true" />MIDI</button>
-        <button type="button" class="head-button" aria-label="Hilfe und Tastenkürzel" title="Hilfe und Tastenkürzel (?)" @click="helpDialog = true">?</button>
+        <KvButton v-hint="projectsFull ? `Alle ${MAX_PROJECTS} Plätze belegt – unter Projekte kannst du eines löschen` : 'Neues Projekt aus einem Werkprofil anlegen'" size="sm" @click="openNewDialog">Neu</KvButton>
+        <button v-if="AppLink.supported()" v-hint="linkTitle" type="button" class="head-button" :aria-pressed="linkOn" @click="toggleLink"><i class="link-led" :data-state="!linkOn ? 'off' : linkPeers.length > 0 ? 'linked' : 'waiting'" aria-hidden="true" />GLEICHTAKT</button>
+        <button v-if="midiStatus.state !== 'unsupported'" v-hint="midiHint" type="button" class="head-button" @click="midiDialog = true"><i class="midi-led" :data-state="midiStatus.state" aria-hidden="true" />MIDI</button>
+        <button v-hint="'Hilfe, Tastenkürzel und Tour (?)'" type="button" class="head-button" aria-label="Hilfe und Tastenkürzel" @click="helpDialog = true">?</button>
       </div>
     </header>
 
-    <KvAlert v-if="state.transport.status === 'error' || state.transport.status === 'suspended'" :status="state.transport.status === 'error' ? 'error' : 'warning'" title="Audio braucht deine Hilfe">
-      {{ state.transport.message }} — klicke erneut auf Start.
-    </KvAlert>
+    <main id="kitty-main" class="kitty-main">
+      <KvAlert v-if="state.transport.status === 'error' || state.transport.status === 'suspended'" :status="state.transport.status === 'error' ? 'error' : 'warning'" title="Audio braucht deine Hilfe">
+        {{ state.transport.message }} — klicke erneut auf Start.
+      </KvAlert>
 
-    <section class="transport-panel" aria-label="Transport und musikalische Einstellungen">
-      <KvButton class="start-button" size="lg" :loading="state.transport.status === 'starting'" @click="toggleTransport">
-        {{ isPlaying ? "■ STOP" : state.transport.status === "error" || state.transport.status === "suspended" ? "▶ ERNEUT" : "▶ START" }}
-      </KvButton>
-      <div class="transport-readout" aria-live="polite">
-        <span>{{ state.transport.message }}</span>
-        <strong>{{ state.project.tempo }} BPM</strong>
-      </div>
-      <KvField label="Tempo" description="120–180 BPM">
-        <KvSlider :model-value="state.project.tempo" :min="120" :max="180" :step="1" @update:model-value="dispatch({ type: 'project/tempo', value: Number($event) }, 'tempo')" />
-      </KvField>
-      <KvField label="Grundton">
-        <KvSelect :model-value="state.project.root" :options="rootOptions" @update:model-value="dispatch({ type: 'project/root', value: $event as RootNote })" />
-      </KvField>
-      <KvField label="Skala">
-        <KvSelect :model-value="state.project.scale" :options="scaleOptions" @update:model-value="dispatch({ type: 'project/scale', value: $event as Scale })" />
-      </KvField>
-      <KvField label="Swing">
-        <KvSlider :model-value="state.project.swing" :min="0" :max="0.35" :step="0.01" @update:model-value="dispatch({ type: 'project/swing', value: Number($event) }, 'swing')" />
-      </KvField>
-      <div class="history-buttons">
-        <KvButton variant="ghost" size="sm" :disabled="!state.canUndo" @click="dispatch({ type: 'history/undo' })">↶ Undo</KvButton>
-        <KvButton variant="ghost" size="sm" :disabled="!state.canRedo" @click="dispatch({ type: 'history/redo' })">↷ Redo</KvButton>
-      </div>
-    </section>
-
-    <section class="scene-strip" aria-label="Szenen">
-      <button
-        v-for="(scene, index) in state.project.scenes"
-        :key="scene.role"
-        type="button"
-        class="scene-pad"
-        :class="{ 'is-selected': state.ui.selectedScene === index, 'is-running': isPlaying && state.transport.runningScene === index, 'is-queued': state.transport.queuedScene === index }"
-        :aria-pressed="state.ui.selectedScene === index"
-        :data-scene="index"
-        @click="selectScene(index)"
-      >
-        <span>0{{ index + 1 }} · {{ scene.role.toUpperCase() }}</span>
-        <strong>{{ scene.name }}</strong>
-        <small>{{ state.transport.queuedScene === index ? "NÄCHSTER TAKT" : isPlaying && state.transport.runningScene === index ? "LÄUFT" : chainNextScene === index ? "DANACH" : "UMSCHALT+" + (index + 1) }}</small>
-      </button>
-    </section>
-
-    <section class="arrangement" aria-label="Szenenfolge, Export und Teilen">
-      <button type="button" class="chain-toggle" role="switch" aria-label="Szenenfolge" :aria-checked="state.ui.sceneChain" title="Spielt alle vier Szenen automatisch nacheinander" @click="toggleChain">
-        <i aria-hidden="true" />SZENENFOLGE {{ state.ui.sceneChain ? "AN" : "AUS" }}
-      </button>
-      <div class="repeat-group" role="group" aria-label="Länge jeder Szene in der Szenenfolge">
-        <button v-for="value in SCENE_REPEATS" :key="value" type="button" class="repeat-button" :aria-pressed="state.project.sceneRepeats === value" @click="dispatch({ type: 'project/scene-repeats', value })">{{ value * 4 }} TAKTE</button>
-      </div>
-      <span class="arrangement-hint">je Szene · ganzer Bogen {{ formatDuration(arcSeconds) }}</span>
-      <div class="arrangement-actions">
-        <KvButton variant="secondary" size="sm" @click="openExport">Als WAV exportieren</KvButton>
-        <KvButton variant="secondary" size="sm" @click="shareLink">Link teilen</KvButton>
-      </div>
-    </section>
-
-    <section class="live-bar" aria-label="Live spielen und aufnehmen">
-      <button type="button" class="live-record" :aria-pressed="recording" title="Nimmt auf, was du hörst, und speichert es als WAV (A)" @click="toggleRecording">
-        <i aria-hidden="true" />{{ recording ? "AUFNAHME STOPPEN" : "AUFNAHME" }} <output data-record-time>{{ formatClock(recordingSeconds) }}</output>
-      </button>
-      <button type="button" class="live-keys" :aria-pressed="liveKeys" title="Mit Live-Tasten schalten 1–5 die Spuren am nächsten Takt stumm (P)" @click="liveKeys = !liveKeys">LIVE-TASTEN <kbd>P</kbd></button>
-      <div class="live-mutes" role="group" aria-label="Spuren am nächsten Takt stumm schalten">
-        <button
-          v-for="(track, index) in TRACK_KINDS"
-          :key="track"
-          type="button"
-          class="live-mute"
-          :data-track="track"
-          :aria-pressed="liveState.muted.includes(track)"
-          :data-pending="liveState.pending.includes(track) ? '' : undefined"
-          :aria-label="`${TRACK_LABELS[track].name} am nächsten Takt stumm schalten`"
-          @click="togglePerformanceMute(track)"
-        >{{ TRACK_LABELS[track].short }}<kbd v-if="liveKeys">{{ index + 1 }}</kbd></button>
-      </div>
-      <label class="live-filter" title="F halten: Tiefpass · Umschalt+F halten: Hochpass · federt beim Loslassen zurück">
-        <span>FILTER</span>
-        <input type="range" min="-100" max="100" step="1" :value="Math.round(filterValue * 100)" data-perf-filter aria-label="Filter, links Tiefpass, rechts Hochpass" @input="onFilterInput" @pointerup="glideFilter(0, 0.18)" @keyup="glideFilter(0, 0.18)">
-      </label>
-      <button
-        type="button"
-        class="live-break"
-        data-perf-break
-        :data-state="liveState.dropPending ? 'drop' : liveState.breakActive ? 'break' : 'idle'"
-        :aria-pressed="liveState.breakActive"
-        title="Halten: Kick und Acid raus, der Hochpass steigt. Loslassen: Drop am nächsten Takt (B)"
-        @pointerdown="engine.setBreak(true)"
-        @pointerup="releaseBreak"
-        @pointerleave="releaseBreak"
-        @pointercancel="releaseBreak"
-      >BREAK → DROP <kbd>B</kbd></button>
-    </section>
-
-    <div class="workspace">
-      <aside class="track-rail" aria-label="Spuren">
-        <button
-          v-for="(track, index) in TRACK_KINDS"
-          :key="track"
-          type="button"
-          class="track-button"
-          :class="{ 'is-selected': selectedTrack === track }"
-          :aria-pressed="selectedTrack === track"
-          :data-track="track"
-          @click="dispatch({ type: 'ui/select-track', track })"
-        >
-          <span>0{{ index + 1 }}</span>
-          <strong>{{ TRACK_LABELS[track].short }}</strong>
-          <div class="mini-meter" aria-hidden="true"><i :style="{ width: percent(state.transport.trackPeaks[track]) }" /></div>
-        </button>
-      </aside>
-
-      <section class="sequencer-panel">
-        <div class="section-head">
-          <div>
-            <p class="eyebrow">{{ selectedScene.name }} · 4 TAKTE</p>
-            <h2>{{ TRACK_LABELS[selectedTrack].name }}</h2>
-            <p>{{ TRACK_LABELS[selectedTrack].description }}</p>
-          </div>
-          <div class="pattern-actions">
-            <KvSelect :model-value="state.ui.variationAmount" :options="VARIATION_AMOUNTS.map((value: VariationAmount) => ({ value, label: value === 'subtle' ? 'Dezent' : value === 'lively' ? 'Lebendig' : 'Mutig' }))" aria-label="Stärke der Variation" @update:model-value="dispatch({ type: 'ui/variation-amount', amount: $event as VariationAmount })" />
-            <KvButton variant="secondary" size="sm" @click="dispatch({ type: 'track/vary' })">V · Variation</KvButton>
-            <KvButton variant="secondary" size="sm" @click="dispatch({ type: 'track/typical' })">R · Typisch</KvButton>
-            <KvSelect class="loop-select" :model-value="pattern.loopSteps ?? 64" :options="loopOptions" aria-label="Spurlänge" title="Kürzere Spuren laufen gegen die vier Takte der Szene weiter und verschieben sich dabei." @update:model-value="dispatch({ type: 'track/loop', value: Number($event) })" />
-          </div>
+      <section class="transport-panel" aria-labelledby="transport-heading">
+        <h2 id="transport-heading" class="kv-visually-hidden">Transport und Grundeinstellungen</h2>
+        <KvButton v-hint="'Start und Stop (Leertaste)'" class="start-button" size="lg" :loading="state.transport.status === 'starting'" @click="toggleTransport">
+          <span aria-hidden="true">{{ isPlaying ? "■" : "▶" }}</span> {{ isPlaying ? "STOP" : state.transport.status === "error" || state.transport.status === "suspended" ? "ERNEUT" : "START" }}
+        </KvButton>
+        <div class="transport-readout">
+          <span aria-live="polite">{{ state.transport.message }}</span>
+          <strong>{{ state.project.tempo }} BPM</strong>
         </div>
-        <StepGrid
-          :pattern="pattern"
-          :selected-bar="state.ui.selectedBar"
-          :selected-step="state.ui.selectedStep"
-          :locks="state.ui.locks[selectedTrack]"
-          :playhead-bar="trackPlayhead?.bar ?? 0"
-          :playhead-step="trackPlayhead?.step ?? 0"
-          :playing="trackPlayhead !== null"
-          @press="(bar, stepIndex) => dispatch({ type: 'step/press', bar, step: stepIndex })"
-          @select-bar="(bar) => dispatch({ type: 'ui/select-bar', bar })"
-          @toggle-lock="(bar) => dispatch({ type: 'ui/toggle-lock', bar })"
-        />
-        <p class="grid-help">Klick oder Enter wählt einen Step; freie Steps werden aktiviert · Ausschalten erfolgt in den Step-Details · Schloss schützt den Takt vor Generatoren</p>
-
-        <KvCard class="step-editor" padding="sm">
-          <template #header>
-            <h3>Step-Details</h3>
-            <div v-if="step?.enabled" class="step-editor-actions">
-              <KvBadge status="success">Takt {{ state.ui.selectedBar + 1 }} · Step {{ (state.ui.selectedStep ?? 0) + 1 }}</KvBadge>
-              <KvButton variant="ghost" size="sm" @click="dispatch({ type: 'step/disable' })">Step ausschalten</KvButton>
-            </div>
-          </template>
-          <p v-if="!step?.enabled" class="empty-step">Wähle oder aktiviere einen Step im Raster.</p>
-          <div v-else-if="selectedTrack === 'drums'" class="drum-voices" role="group" aria-label="Drum-Stimmen">
-            <button
-              v-for="voice in DRUM_VOICES"
-              :key="voice"
-              type="button"
-              class="voice-button"
-              :class="{ 'is-active': step.drumVoices.includes(voice) }"
-              :aria-pressed="step.drumVoices.includes(voice)"
-              :disabled="drumDisabled(voice)"
-              @click="dispatch({ type: 'step/drum-voice', voice })"
-            >{{ DRUM_LABELS[voice] }}</button>
-            <KvBadge>{{ step.drumVoices.length }}/2</KvBadge>
-          </div>
-          <div v-else class="step-fields">
-            <KvField label="Tonrolle"><KvSelect :model-value="step.degree" :options="degreeOptions" @update:model-value="dispatch({ type: 'step/degree', value: Number($event) })" /></KvField>
-            <KvField label="Lage"><KvSelect :model-value="step.octave" :options="octaveOptions" @update:model-value="dispatch({ type: 'step/octave', value: Number($event) })" /></KvField>
-            <KvField label="Dynamik"><KvSelect :model-value="step.dynamics" :options="dynamicsOptions" @update:model-value="dispatch({ type: 'step/dynamics', value: $event as 'ghost' | 'normal' | 'accent' })" /></KvField>
-            <KvField label="Länge"><KvSelect :model-value="step.length" :options="lengthOptions" @update:model-value="dispatch({ type: 'step/length', value: $event as 'short' | 'normal' | 'long' })" /></KvField>
-            <button v-if="selectedTrack === 'acid'" type="button" class="slide-button" role="switch" :aria-checked="step.slide" @click="dispatch({ type: 'step/slide', value: !step.slide })">SLIDE {{ step.slide ? "AN" : "AUS" }}</button>
-          </div>
-          <div v-if="step?.enabled" class="step-extras">
-            <KvField label="Chance"><KvSelect :model-value="stepChance(step)" :options="chanceOptions" @update:model-value="dispatch({ type: 'step/probability', value: Number($event) })" /></KvField>
-            <KvField v-if="allowsRatchet(selectedTrack)" label="Wiederholung"><KvSelect :model-value="stepRatchet(step)" :options="ratchetOptions" @update:model-value="dispatch({ type: 'step/ratchet', value: Number($event) })" /></KvField>
-            <p>Chance würfelt bei jedem Durchlauf neu, Wiederholungen teilen den Step in schnelle Schläge.</p>
-          </div>
-        </KvCard>
+        <KvField label="Tempo">
+          <UnitSlider :model-value="state.project.tempo" :min="MIN_TEMPO" :max="MAX_TEMPO" :step="1" :format="(value) => `${value} BPM`" :display="(value) => String(value)" @update:model-value="dispatch({ type: 'project/tempo', value: $event }, 'tempo')" />
+        </KvField>
+        <KvField label="Grundton">
+          <KvSelect :model-value="state.project.root" :options="rootOptions" @update:model-value="dispatch({ type: 'project/root', value: $event as RootNote })" />
+        </KvField>
+        <KvField label="Skala">
+          <KvSelect :model-value="state.project.scale" :options="scaleOptions" @update:model-value="dispatch({ type: 'project/scale', value: $event as Scale })" />
+        </KvField>
+        <KvField label="Swing">
+          <UnitSlider :model-value="state.project.swing" :min="0" :max="0.35" :step="0.01" :format="percentLabel" @update:model-value="dispatch({ type: 'project/swing', value: $event }, 'swing')" />
+        </KvField>
+        <div class="history-buttons">
+          <KvButton v-hint="'Rückgängig (Strg+Z)'" class="history-button" variant="ghost" size="sm" aria-label="Rückgängig" :disabled="!state.canUndo" @click="dispatch({ type: 'history/undo' })"><span aria-hidden="true">↶</span></KvButton>
+          <KvButton v-hint="'Wiederholen (Strg+Umschalt+Z)'" class="history-button" variant="ghost" size="sm" aria-label="Wiederholen" :disabled="!state.canRedo" @click="dispatch({ type: 'history/redo' })"><span aria-hidden="true">↷</span></KvButton>
+        </div>
       </section>
 
-      <aside class="sound-panel">
-        <KvCard padding="sm">
-          <template #header><h3>Klangfarbe</h3><span>gilt für alle Szenen</span></template>
-          <div class="preset-list">
-            <KvTooltip v-for="preset in selectedPresets" :key="preset.id" :text="preset.hint" placement="left">
-              <button type="button" class="preset-button" :class="{ 'is-active': state.project.soundPresets[selectedTrack] === preset.id }" :aria-pressed="state.project.soundPresets[selectedTrack] === preset.id" @click="dispatch({ type: 'project/preset', track: selectedTrack, value: preset.id as SoundPresetId })">
+      <section class="scene-strip" aria-labelledby="scenes-heading">
+        <h2 id="scenes-heading" class="kv-visually-hidden">Szenen</h2>
+        <button
+          v-for="(scene, index) in state.project.scenes"
+          :key="scene.role"
+          type="button"
+          class="scene-pad"
+          :class="{ 'is-selected': state.ui.selectedScene === index, 'is-running': isPlaying && state.transport.runningScene === index, 'is-queued': state.transport.queuedScene === index }"
+          :aria-pressed="state.ui.selectedScene === index"
+          :data-scene="index"
+          @click="selectScene(index)"
+        >
+          <span>0{{ index + 1 }} · {{ scene.role.toUpperCase() }}</span>
+          <strong>{{ scene.name }}</strong>
+          <small>{{ state.transport.queuedScene === index ? "NÄCHSTER TAKT" : isPlaying && state.transport.runningScene === index ? "LÄUFT" : chainNextScene === index ? "DANACH" : "UMSCHALT+" + (index + 1) }}</small>
+        </button>
+      </section>
+
+      <section class="arrangement" aria-labelledby="arrangement-heading">
+        <h2 id="arrangement-heading" class="kv-visually-hidden">Szenenfolge, Export und Teilen</h2>
+        <button v-hint="'Spielt alle vier Szenen automatisch nacheinander und beginnt dann von vorn'" type="button" class="chain-toggle" role="switch" aria-label="Szenenfolge" :aria-checked="state.ui.sceneChain" @click="toggleChain">
+          <i aria-hidden="true" />SZENENFOLGE {{ state.ui.sceneChain ? "AN" : "AUS" }}
+        </button>
+        <div class="repeat-group" role="group" aria-label="Länge jeder Szene in der Szenenfolge">
+          <button v-for="value in SCENE_REPEATS" :key="value" type="button" class="repeat-button" :aria-pressed="state.project.sceneRepeats === value" @click="dispatch({ type: 'project/scene-repeats', value })">{{ value * 4 }} TAKTE</button>
+        </div>
+        <span class="arrangement-hint">je Szene · ganzer Bogen {{ formatDuration(arcSeconds) }}</span>
+        <div class="arrangement-actions">
+          <KvButton variant="secondary" size="sm" @click="openExport">Als WAV exportieren</KvButton>
+          <KvButton variant="secondary" size="sm" @click="shareLink">Link teilen</KvButton>
+        </div>
+      </section>
+
+      <section class="live-bar" aria-labelledby="live-heading">
+        <h2 id="live-heading" class="kv-visually-hidden">Live spielen und aufnehmen</h2>
+        <button v-hint="'Nimmt auf, was du hörst, und speichert es als WAV (A)'" type="button" class="live-record" :aria-pressed="recording" @click="toggleRecording">
+          <i aria-hidden="true" />{{ recording ? "AUFNAHME STOPPEN" : "AUFNAHME" }} <output data-record-time>{{ formatClock(recordingSeconds) }}</output>
+        </button>
+        <button v-hint="'Mit Live-Tasten schalten 1–5 die Spuren am nächsten Takt stumm (P)'" type="button" class="live-keys" :aria-pressed="liveKeys" @click="liveKeys = !liveKeys">LIVE-TASTEN <kbd>P</kbd></button>
+        <div class="live-mutes" role="group" aria-label="Spuren am nächsten Takt stumm schalten">
+          <button
+            v-for="(track, index) in TRACK_KINDS"
+            :key="track"
+            type="button"
+            class="live-mute"
+            :data-track="track"
+            :aria-pressed="liveState.muted.includes(track)"
+            :data-pending="liveState.pending.includes(track) ? '' : undefined"
+            :aria-label="`${TRACK_LABELS[track].short} – ${TRACK_LABELS[track].name} am nächsten Takt stumm schalten`"
+            @click="togglePerformanceMute(track)"
+          >{{ TRACK_LABELS[track].short }}<kbd v-if="liveKeys">{{ index + 1 }}</kbd></button>
+        </div>
+        <label v-hint="'F halten: Tiefpass · Umschalt+F halten: Hochpass · federt beim Loslassen zurück'" class="live-filter">
+          <span>FILTER</span>
+          <input type="range" min="-100" max="100" step="1" :value="Math.round(filterValue * 100)" data-perf-filter aria-label="Filter, links Tiefpass, rechts Hochpass" :aria-valuetext="filterText" @input="onFilterInput" @pointerup="glideFilter(0, 0.18)" @keyup="glideFilter(0, 0.18)">
+        </label>
+        <button
+          v-hint="'Halten: Kick und Acid raus, der Hochpass steigt; loslassen bringt den Drop am nächsten Takt. Kurz tippen rastet den Break ein, nochmal tippen bringt den Drop (B)'"
+          type="button"
+          class="live-break"
+          data-perf-break
+          :data-state="liveState.dropPending ? 'drop' : liveState.breakActive ? 'break' : 'idle'"
+          :aria-pressed="liveState.breakActive"
+          @pointerdown="onBreakDown"
+          @pointerup="onBreakUp"
+          @pointercancel="onBreakUp"
+          @click="onBreakClick"
+        >BREAK → DROP <kbd>B</kbd></button>
+      </section>
+
+      <div class="workspace">
+        <div class="track-rail" role="group" aria-label="Spur wählen">
+          <button
+            v-for="(track, index) in TRACK_KINDS"
+            :key="track"
+            v-hint="`${TRACK_LABELS[track].name}: ${TRACK_LABELS[track].description} (${index + 1})`"
+            type="button"
+            class="track-button"
+            :class="{ 'is-selected': selectedTrack === track }"
+            :aria-pressed="selectedTrack === track"
+            :data-track="track"
+            @click="dispatch({ type: 'ui/select-track', track })"
+          >
+            <span>0{{ index + 1 }}</span>
+            <strong>{{ TRACK_LABELS[track].short }}</strong>
+            <div class="mini-meter" aria-hidden="true"><i :style="{ width: percent(state.transport.trackPeaks[track]) }" /></div>
+          </button>
+        </div>
+
+        <section class="sequencer-panel" aria-labelledby="track-heading">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">{{ selectedScene.name }} · 4 TAKTE</p>
+              <h2 id="track-heading">{{ TRACK_LABELS[selectedTrack].name }}</h2>
+              <p>{{ TRACK_LABELS[selectedTrack].description }}</p>
+            </div>
+            <div class="pattern-actions">
+              <KvSelect v-hint="'Wie stark V die Spur verändert'" :model-value="state.ui.variationAmount" :options="VARIATION_AMOUNTS.map((value: VariationAmount) => ({ value, label: value === 'subtle' ? 'Dezent' : value === 'lively' ? 'Lebendig' : 'Mutig' }))" aria-label="Stärke der Variation" @update:model-value="dispatch({ type: 'ui/variation-amount', amount: $event as VariationAmount })" />
+              <KvButton v-hint="'Verändert die Spur in der gewählten Stärke; geschützte Takte bleiben (V)'" variant="secondary" size="sm" @click="dispatch({ type: 'track/vary' })">V · Variation</KvButton>
+              <KvButton v-hint="'Ersetzt die Spur durch ein typisches Pattern für Profil und Szene; geschützte Takte bleiben (R)'" variant="secondary" size="sm" @click="dispatch({ type: 'track/typical' })">R · Typisch</KvButton>
+              <KvSelect v-hint="'Kürzere Spuren laufen gegen die vier Takte der Szene weiter und verschieben sich dabei'" class="loop-select" :model-value="pattern.loopSteps ?? 64" :options="loopOptions" aria-label="Spurlänge" @update:model-value="dispatch({ type: 'track/loop', value: Number($event) })" />
+            </div>
+          </div>
+          <StepGrid
+            id="step-grid"
+            ref="stepGrid"
+            :pattern="pattern"
+            :track-name="TRACK_LABELS[selectedTrack].name"
+            :selected-bar="state.ui.selectedBar"
+            :selected-step="state.ui.selectedStep"
+            :locks="state.ui.locks[selectedTrack]"
+            :playhead-bar="trackPlayhead?.bar ?? 0"
+            :playhead-step="trackPlayhead?.step ?? 0"
+            :playing="trackPlayhead !== null"
+            @press="pressStep"
+            @clear="clearStep"
+            @toggle-lock="(bar) => dispatch({ type: 'ui/toggle-lock', bar })"
+          />
+          <p class="grid-help">Klick oder Enter setzt einen Step; ein zweiter Klick auf den gewählten Step oder Entf schaltet ihn aus · Pfeiltasten wandern durchs Raster · das Schloss schützt einen Takt vor V und R</p>
+          <p class="grid-legend" data-grid-legend>{{ gridLegend }}</p>
+
+          <KvCard class="step-editor" padding="sm">
+            <template #header>
+              <h3>Step-Details</h3>
+              <div class="step-editor-actions">
+                <KvBadge v-if="step?.enabled" status="success">Takt {{ state.ui.selectedBar + 1 }} · Step {{ (state.ui.selectedStep ?? 0) + 1 }}</KvBadge>
+                <KvButton v-if="step?.enabled" variant="ghost" size="sm" @click="dispatch({ type: 'step/disable' })">Step ausschalten</KvButton>
+                <button v-hint="'Spielt einen Step einmal an, wenn du ihn setzt oder änderst, solange die Musik steht'" type="button" class="preview-toggle" role="switch" :aria-checked="preview" data-preview @click="preview = !preview"><i aria-hidden="true" />VORHÖREN</button>
+              </div>
+            </template>
+            <p v-if="!step?.enabled" class="empty-step">Wähle oder aktiviere einen Step im Raster.</p>
+            <div v-else-if="selectedTrack === 'drums'" class="drum-voices" role="group" aria-label="Drum-Stimmen, höchstens zwei pro Step">
+              <button
+                v-for="voice in DRUM_VOICES"
+                :key="voice"
+                type="button"
+                class="voice-button"
+                :class="{ 'is-active': step.drumVoices.includes(voice) }"
+                :aria-pressed="step.drumVoices.includes(voice)"
+                :disabled="drumDisabled(voice)"
+                @click="editStep({ type: 'step/drum-voice', voice })"
+              ><b aria-hidden="true">{{ DRUM_SHORT[voice] }}</b>{{ DRUM_LABELS[voice] }}</button>
+              <span class="voice-count">{{ step.drumVoices.length }} von 2</span>
+            </div>
+            <div v-else class="step-fields">
+              <KvField label="Tonstufe"><KvSelect :model-value="step.degree" :options="degreeOptions" @update:model-value="editStep({ type: 'step/degree', value: Number($event) })" /></KvField>
+              <KvField label="Lage"><KvSelect :model-value="step.octave" :options="octaveOptions" @update:model-value="editStep({ type: 'step/octave', value: Number($event) })" /></KvField>
+              <KvField label="Dynamik"><KvSelect :model-value="step.dynamics" :options="dynamicsOptions" @update:model-value="editStep({ type: 'step/dynamics', value: $event as 'ghost' | 'normal' | 'accent' })" /></KvField>
+              <KvField label="Länge"><KvSelect :model-value="step.length" :options="lengthOptions" @update:model-value="editStep({ type: 'step/length', value: $event as 'short' | 'normal' | 'long' })" /></KvField>
+              <button v-if="selectedTrack === 'acid'" v-hint="'Gleitet ohne neuen Anschlag in diesen Ton'" type="button" class="slide-button" role="switch" :aria-checked="step.slide" @click="editStep({ type: 'step/slide', value: !step.slide })">SLIDE {{ step.slide ? "AN" : "AUS" }}</button>
+            </div>
+            <div v-if="step?.enabled" class="step-extras">
+              <KvField label="Chance"><KvSelect :model-value="stepChance(step)" :options="chanceOptions" @update:model-value="dispatch({ type: 'step/probability', value: Number($event) })" /></KvField>
+              <KvField v-if="allowsRatchet(selectedTrack)" label="Wiederholung"><KvSelect :model-value="stepRatchet(step)" :options="ratchetOptions" @update:model-value="editStep({ type: 'step/ratchet', value: Number($event) })" /></KvField>
+              <p>Chance würfelt bei jedem Durchlauf neu, Wiederholungen teilen den Step in schnelle Schläge.</p>
+            </div>
+          </KvCard>
+        </section>
+
+        <aside class="sound-panel" aria-label="Klang der Spur">
+          <KvCard padding="sm">
+            <template #header><h3>Klangfarbe</h3><span>gilt für alle Szenen</span></template>
+            <div class="preset-list" role="group" aria-label="Klangfarbe">
+              <button v-for="preset in selectedPresets" :key="preset.id" type="button" class="preset-button" :class="{ 'is-active': state.project.soundPresets[selectedTrack] === preset.id }" :aria-pressed="state.project.soundPresets[selectedTrack] === preset.id" @click="dispatch({ type: 'project/preset', track: selectedTrack, value: preset.id as SoundPresetId })">
                 <strong>{{ preset.label }}</strong><small>{{ preset.hint }}</small>
               </button>
-            </KvTooltip>
+            </div>
+          </KvCard>
+          <KvCard padding="sm">
+            <template #header><h3>Makros</h3><span>sicher begrenzt</span></template>
+            <KvField v-for="macro in MACRO_KINDS" :key="macro" :label="MACRO_LABELS[macro]" :description="MACRO_HINTS[selectedTrack][macro]">
+              <UnitSlider :model-value="pattern.macros[macro]" :min="0" :max="1" :step="0.01" :format="percentLabel" @update:model-value="dispatch({ type: 'track/macro', macro, value: $event }, `macro-${macro}`)" />
+            </KvField>
+          </KvCard>
+        </aside>
+      </div>
+
+      <section class="mixer" aria-labelledby="mixer-heading">
+        <div class="mixer-title"><p class="eyebrow">ECHTE SPURPEGEL</p><h2 id="mixer-heading">Mixer</h2></div>
+        <div v-for="track in TRACK_KINDS" :key="track" class="mixer-channel" role="group" :aria-label="TRACK_LABELS[track].name" :data-track="track">
+          <strong aria-hidden="true">{{ TRACK_LABELS[track].short }}</strong>
+          <div class="level-meter" :aria-label="`Pegel ${TRACK_LABELS[track].name}`" role="meter" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="Math.round(state.transport.trackPeaks[track] * 100)"><i :style="{ height: percent(state.transport.trackPeaks[track]) }" /></div>
+          <UnitSlider :model-value="mixFor(track)?.volume ?? 0" :min="0" :max="1" :step="0.01" :format="percentLabel" :aria-label="`Lautstärke ${TRACK_LABELS[track].name}`" @update:model-value="dispatch({ type: 'mix/volume', track, value: $event }, `volume-${track}`)" />
+          <div class="mix-buttons">
+            <button v-hint="'Stumm – wird im Projekt gespeichert'" type="button" class="mix-mute" :class="{ active: mixFor(track)?.muted }" :aria-pressed="mixFor(track)?.muted" :aria-label="`M – ${TRACK_LABELS[track].name} stumm`" @click="dispatch({ type: 'mix/mute', track })">M</button>
+            <button v-hint="'Solo – dann sind nur Spuren mit Solo zu hören'" type="button" class="mix-solo" :class="{ active: mixFor(track)?.solo }" :aria-pressed="mixFor(track)?.solo" :aria-label="`S – ${TRACK_LABELS[track].name} solo`" @click="dispatch({ type: 'mix/solo', track })">S</button>
           </div>
-        </KvCard>
-        <KvCard padding="sm">
-          <template #header><h3>Makros</h3><span>sicher begrenzt</span></template>
-          <KvField v-for="macro in (['color', 'pressure', 'space', 'motion', 'density'] as MacroKind[])" :key="macro" :label="MACRO_LABELS[macro]" :description="MACRO_HINTS[selectedTrack][macro]">
-            <KvSlider :model-value="pattern.macros[macro]" :min="0" :max="1" :step="0.01" @update:model-value="dispatch({ type: 'track/macro', macro, value: Number($event) }, `macro-${macro}`)" />
-          </KvField>
-        </KvCard>
-      </aside>
-    </div>
-
-    <section class="mixer" aria-labelledby="mixer-heading">
-      <div class="mixer-title"><p class="eyebrow">ECHTE SPURPEGEL</p><h2 id="mixer-heading">Mixer</h2></div>
-      <div v-for="track in TRACK_KINDS" :key="track" class="mixer-channel" :data-track="track">
-        <strong>{{ TRACK_LABELS[track].short }}</strong>
-        <div class="level-meter" :aria-label="`Pegel ${TRACK_LABELS[track].name}`" role="meter" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="Math.round(state.transport.trackPeaks[track] * 100)"><i :style="{ height: percent(state.transport.trackPeaks[track]) }" /></div>
-        <KvSlider :model-value="state.project.mix.find((entry) => entry.instrument === track)?.volume ?? 0" :min="0" :max="1" :step="0.01" :aria-label="`Lautstärke ${TRACK_LABELS[track].name}`" @update:model-value="dispatch({ type: 'mix/volume', track, value: Number($event) }, `volume-${track}`)" />
-        <div class="mix-buttons">
-          <button type="button" :class="{ active: state.project.mix.find((entry) => entry.instrument === track)?.muted }" :aria-pressed="state.project.mix.find((entry) => entry.instrument === track)?.muted" @click="dispatch({ type: 'mix/mute', track })">M</button>
-          <button type="button" :class="{ active: state.project.mix.find((entry) => entry.instrument === track)?.solo }" :aria-pressed="state.project.mix.find((entry) => entry.instrument === track)?.solo" @click="dispatch({ type: 'mix/solo', track })">S</button>
         </div>
-      </div>
-      <div class="master-channel">
-        <strong>MASTER</strong>
-        <div class="level-meter master" role="meter" aria-label="Masterpegel" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="Math.round(state.transport.peak * 100)"><i :style="{ height: percent(state.transport.peak) }" /></div>
-        <KvSlider :model-value="state.project.masterVolume" :min="0" :max="1" :step="0.01" aria-label="Masterlautstärke" @update:model-value="dispatch({ type: 'project/master', value: Number($event) }, 'master')" />
-      </div>
-    </section>
+        <div class="master-channel" role="group" aria-label="Master">
+          <strong aria-hidden="true">MASTER</strong>
+          <div class="level-meter master" role="meter" aria-label="Masterpegel" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="Math.round(state.transport.peak * 100)"><i :style="{ height: percent(state.transport.peak) }" /></div>
+          <UnitSlider :model-value="state.project.masterVolume" :min="0" :max="1" :step="0.01" :format="percentLabel" aria-label="Masterlautstärke" @update:model-value="dispatch({ type: 'project/master', value: $event }, 'master')" />
+        </div>
+      </section>
+    </main>
 
-    <footer><span>Alles läuft lokal in deinem Browser · Projekte sicherst du unter Projekte → Als Datei sichern · <span data-app-version>{{ appVersion }}</span></span><span>LEERTASTE Start/Stop · 1–5 Spuren · UMSCHALT+1–4 Szenen · V Variation · R Typisch · A Aufnahme · B Break · ? Hilfe</span></footer>
-  </main>
+    <footer>
+      <span>Alles läuft lokal in deinem Browser · Projekte sicherst du unter Projekte → Als Datei sichern · <span data-app-version>{{ appVersion }}</span></span>
+      <span>LEERTASTE Start/Stop · 1–5 Spuren · UMSCHALT+1–4 Szenen · V Variation · R Typisch · A Aufnahme · B Break · ? Hilfe</span>
+      <button v-if="fullUi" type="button" class="compact-return" @click="fullUi = false">Hinweisseite statt Oberfläche zeigen</button>
+    </footer>
+  </div>
 
   <KvDialog v-model:open="newDialog" title="Neues Werkprojekt" description="Das Profil setzt nur dieses neue Projekt auf. Bestehende Musik bleibt unverändert." close-label="Schließen">
     <div class="dialog-stack">
@@ -1064,23 +1208,34 @@ onBeforeUnmount(() => {
     </template>
   </KvDialog>
 
-  <KvDialog v-model:open="projectsDialog" title="Lokale Projekte" :description="`${projects.length} von ${MAX_PROJECTS} belegt`" close-label="Schließen" size="lg">
-    <div class="project-list">
-      <button v-for="project in projects" :key="project.id" type="button" :class="{ active: project.id === active.id }" @click="switchProject(project.id)">
-        <strong>{{ project.name }}</strong><span>{{ new Date(project.updatedAt).toLocaleString('de-DE') }}</span>
+  <KvDialog v-model:open="projectsDialog" title="Lokale Projekte" :description="`${projects.length} von ${MAX_PROJECTS} Plätzen belegt · alles bleibt in diesem Browser`" close-label="Schließen" size="lg">
+    <KvAlert v-if="projectsFull" class="projects-full" status="info" title="Alle Plätze belegt">Lösche ein Projekt, um ein neues anzulegen, eines zu duplizieren oder eine Datei zu öffnen.</KvAlert>
+    <h3 id="project-open-heading" class="dialog-heading">Projekt öffnen</h3>
+    <div class="project-list" role="group" aria-labelledby="project-open-heading">
+      <button v-for="project in projects" :key="project.id" type="button" :class="{ active: project.id === active.id }" :aria-current="project.id === active.id ? 'true' : undefined" @click="switchProject(project.id)">
+        <strong>{{ project.name }}</strong><span>{{ project.id === active.id ? "geöffnet · " : "" }}{{ new Date(project.updatedAt).toLocaleString('de-DE') }}</span>
       </button>
     </div>
-    <KvField label="Aktives Projekt umbenennen"><KvInput v-model="renameValue" maxlength="40" /></KvField>
-    <div class="project-file-actions">
-      <KvButton variant="secondary" size="sm" @click="exportProject">Als Datei sichern</KvButton>
-      <KvButton variant="secondary" size="sm" :disabled="projects.length >= MAX_PROJECTS" @click="importInput?.click()">Datei öffnen …</KvButton>
+    <section class="project-active" aria-labelledby="project-active-heading">
+      <h3 id="project-active-heading" class="dialog-heading">Geöffnet: {{ active.name }}</h3>
+      <form class="rename-row" @submit.prevent="renameProject">
+        <KvField label="Neuer Name"><KvInput v-model="renameValue" maxlength="40" /></KvField>
+        <KvButton type="submit" variant="secondary">Umbenennen</KvButton>
+      </form>
+      <div class="project-file-actions">
+        <KvButton variant="secondary" size="sm" @click="exportProject">Als Datei sichern</KvButton>
+        <KvButton variant="secondary" size="sm" :disabled="projectsFull" @click="duplicateProject">Duplizieren</KvButton>
+        <KvButton variant="danger" size="sm" :disabled="projects.length <= 1" @click="deleteDialog = true">Löschen</KvButton>
+        <span v-if="projects.length <= 1">Das einzige Projekt bleibt immer erhalten.</span>
+      </div>
+    </section>
+    <div class="project-file-actions project-import">
+      <KvButton variant="secondary" size="sm" :disabled="projectsFull" @click="importInput?.click()">Datei öffnen …</KvButton>
       <input ref="importInput" type="file" accept=".json,application/json" data-import-input hidden @change="onImportInput">
       <span>Projektdateien kannst du auch einfach ins Fenster ziehen.</span>
     </div>
     <template #footer>
-      <KvButton variant="danger" :disabled="projects.length <= 1" @click="deleteDialog = true">Löschen</KvButton>
-      <KvButton variant="secondary" @click="renameProject">Umbenennen</KvButton>
-      <KvButton variant="secondary" :disabled="projects.length >= MAX_PROJECTS" @click="duplicateProject">Duplizieren</KvButton>
+      <KvButton @click="projectsDialog = false">Fertig</KvButton>
     </template>
   </KvDialog>
 
@@ -1116,7 +1271,7 @@ onBeforeUnmount(() => {
     </template>
   </KvDialog>
 
-  <KvDialog v-model:open="helpDialog" title="Hilfe und Tastenkürzel" description="Die Kürzel wirken, solange kein Eingabefeld oder Button den Fokus hat." close-label="Schließen">
+  <KvDialog v-model:open="helpDialog" title="Hilfe und Tastenkürzel" description="Die Kürzel wirken überall außer in Eingabefeldern und Auswahllisten. Hat ein Button per Tastatur den Fokus, löst die Leertaste ihn aus." close-label="Schließen">
     <dl class="shortcut-list">
       <div v-for="[keys, meaning] in SHORTCUTS" :key="meaning">
         <dt><template v-for="(key, index) in keys" :key="key"><template v-if="index > 0"> + </template><kbd>{{ key }}</kbd></template></dt>

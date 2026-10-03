@@ -152,23 +152,23 @@ test("wählt belegte Steps ohne Typänderung und schaltet sie ausdrücklich aus"
 test("speichert Steps automatisch und rekonstruiert sie nach Reload", async ({ page }) => {
   const step = page.locator('.kitty-step[data-bar="0"][data-step="1"]');
   await step.click();
-  await expect(step).toHaveAttribute("aria-selected", "true");
+  await expect(step).toHaveAttribute("data-state", "on");
   await expect(page.locator("[data-save-status]")).toContainText("gespeichert");
   await page.reload();
-  await expect(page.locator('.kitty-step[data-bar="0"][data-step="1"]')).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator('.kitty-step[data-bar="0"][data-step="1"]')).toHaveAttribute("data-state", "on");
 });
 
 test("erstellt bestätigte Profile, wechselt Projekte und löscht die Undo-Historie beim Wechsel", async ({ page }) => {
   test.setTimeout(60_000);
   await page.locator('.kitty-step[data-bar="0"][data-step="1"]').click();
-  await expect(page.getByRole("button", { name: /Undo/ })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Rückgängig" })).toBeEnabled();
   await page.getByRole("button", { name: "Neu" }).click();
   await expect(page.getByRole("dialog", { name: "Neues Werkprojekt" })).toBeVisible();
   await page.getByText(/^Hard —/).click();
   await page.getByLabel("Projektname").fill("Dunkler Keller");
   await page.getByRole("button", { name: "Hard erstellen" }).click();
   await expect(page.locator(".project-name")).toHaveText("Dunkler Keller");
-  await expect(page.getByRole("button", { name: /Undo/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Rückgängig" })).toBeDisabled();
   await expect(page.getByText("155 BPM", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: /START/ }).click();
@@ -177,7 +177,7 @@ test("erstellt bestätigte Profile, wechselt Projekte und löscht die Undo-Histo
   await expect(page.getByRole("dialog", { name: "Lokale Projekte" })).toBeVisible();
   await page.getByRole("button", { name: /Kitty Hybrid/ }).click();
   await expect(page.locator(".project-name")).toHaveText("Kitty Hybrid");
-  await expect(page.getByRole("button", { name: /Undo/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Rückgängig" })).toBeDisabled();
   await expect(page.getByRole("button", { name: /START/ })).toBeVisible();
 });
 
@@ -200,11 +200,11 @@ test("bedient Spuren, Szenen, Variation und Undo per Tastatur", async ({ page })
   await expect(page.locator('.scene-pad[data-scene="3"]')).toHaveClass(/is-selected/);
   const before = await page.locator('.kitty-step[data-bar="0"][data-step="1"]').getAttribute("class");
   await page.keyboard.press("v");
-  await expect(page.getByRole("button", { name: /Undo/ })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Rückgängig" })).toBeEnabled();
   await page.keyboard.press("Control+z");
   expect(await page.locator('.kitty-step[data-bar="0"][data-step="1"]').getAttribute("class")).toBe(before);
   await page.keyboard.press("r");
-  await expect(page.getByRole("button", { name: /Undo/ })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Rückgängig" })).toBeEnabled();
 });
 
 test("sichert ein Projekt als Datei und öffnet es als neues Projekt", async ({ page }, testInfo) => {
@@ -334,9 +334,9 @@ test("folgt MIDI-Clock und Reglern eines Controllers", async ({ page }) => {
   const pressure = page.getByLabel("Druck", { exact: true });
   await expect(pressure).toHaveValue("1");
   await dialog.getByRole("button", { name: "Fertig" }).click();
-  await page.getByRole("button", { name: /Undo/ }).click();
+  await page.getByRole("button", { name: "Rückgängig" }).click();
   await expect(pressure).toHaveValue("0.76");
-  await expect(page.getByRole("button", { name: /Undo/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Rückgängig" })).toBeDisabled();
 
   await page.getByRole("button", { name: "MIDI", exact: true }).click();
   await dialog.getByRole("button", { name: "Zuweisen" }).first().click();
@@ -376,16 +376,16 @@ test("macht aus einem Reglerzug einen einzigen Undo-Schritt", async ({ page }) =
   await swing.focus();
   for (let press = 0; press < 5; press += 1) await swing.press("ArrowRight");
   await expect(swing).toHaveValue("0.13");
-  await page.getByRole("button", { name: /Undo/ }).click();
+  await page.getByRole("button", { name: "Rückgängig" }).click();
   await expect(swing).toHaveValue("0.08");
-  await expect(page.getByRole("button", { name: /Undo/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Rückgängig" })).toBeDisabled();
 });
 
 test("nimmt das Live-Spiel als WAV auf", async ({ page }, testInfo) => {
   test.setTimeout(60_000);
   await page.locator("body").press("a");
   // The record button says "Aufnahme stoppen" by now as well.
-  await expect(page.getByRole("button", { name: /■ STOP/ })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: "STOP", exact: true })).toBeVisible({ timeout: 10_000 });
   const record = page.locator(".live-record");
   await expect(record).toHaveAttribute("aria-pressed", "true");
   await expect(record.locator("output")).not.toHaveText("0:00", { timeout: 5_000 });
@@ -488,4 +488,132 @@ test("declares its sound as playback on Apple devices, so the ring/silent switch
   await page.getByRole("button", { name: /START/ }).click();
   await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
   expect(await sessionType()).toBe("playback");
+});
+
+test("lässt Tastenkürzel auch nach einem Mausklick auf einen Button wirken", async ({ page }) => {
+  await page.locator('.track-button[data-track="acid"]').click();
+  await expect(page.locator('.track-button[data-track="acid"]')).toBeFocused();
+  await page.keyboard.press("v");
+  await expect(page.getByRole("button", { name: "Rückgängig" })).toBeEnabled();
+  await page.keyboard.press("Control+z");
+  await expect(page.getByRole("button", { name: "Rückgängig" })).toBeDisabled();
+  await page.keyboard.press("Shift+Digit3");
+  await expect(page.locator('.scene-pad[data-scene="2"]')).toHaveAttribute("aria-pressed", "true");
+
+  // After a click, Space is Start/Stop; it does not press the clicked button again.
+  await page.locator('.scene-pad[data-scene="0"]').click();
+  await page.keyboard.press("Space");
+  await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('.scene-pad[data-scene="0"]')).toHaveAttribute("aria-pressed", "true");
+  await page.keyboard.press("Space");
+  await expect(page.getByRole("button", { name: /START/ })).toBeVisible();
+
+  // The same after clicking a step: Space plays, the step stays on.
+  const step = page.locator('.kitty-step[data-bar="0"][data-step="1"]');
+  await step.click();
+  await page.keyboard.press("Space");
+  await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
+  await expect(step).toHaveAttribute("data-state", "on");
+  await page.keyboard.press("Space");
+  await expect(page.getByRole("button", { name: /START/ })).toBeVisible();
+
+  // A button reached with the keyboard keeps Space for itself.
+  await page.locator('.scene-pad[data-scene="1"]').focus();
+  await page.keyboard.press("Space");
+  await expect(page.locator('.scene-pad[data-scene="1"]')).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: /START/ })).toBeVisible();
+});
+
+test("schaltet einen Step mit dem zweiten Klick und mit Entf aus und spielt ihn zum Vorhören an", async ({ page }) => {
+  const step = page.locator('.kitty-step[data-bar="0"][data-step="1"]');
+  await step.click();
+  await expect(step).toHaveAttribute("data-state", "on");
+  await expect(step).toHaveAttribute("aria-current", "true");
+  // The step sounds once: the click started the audio for the preview.
+  await expect(page.locator(".transport-readout")).toContainText("Audio bereit", { timeout: 10_000 });
+  await step.click();
+  await expect(step).toHaveAttribute("data-state", "off");
+  await expect(step).toHaveAttribute("aria-label", /aus$/);
+
+  await step.click();
+  await expect(step).toHaveAttribute("data-state", "on");
+  await step.press("Delete");
+  await expect(step).toHaveAttribute("data-state", "off");
+
+  const preview = page.getByRole("switch", { name: "VORHÖREN" });
+  await expect(preview).toHaveAttribute("aria-checked", "true");
+  await preview.click();
+  await expect(preview).toHaveAttribute("aria-checked", "false");
+  await page.reload();
+  await expect(page.getByRole("switch", { name: "VORHÖREN" })).toHaveAttribute("aria-checked", "false");
+});
+
+test("zeigt in Drum-Steps die Stimmen und in Melodiespuren die Tonstufe", async ({ page }) => {
+  const kickAndHat = page.locator('.kitty-step[data-bar="0"][data-step="0"]');
+  await expect(kickAndHat).toHaveText(/^[KSCHOT]{1,2}$/);
+  await expect(kickAndHat).toHaveAttribute("aria-label", /Takt 1, Step 1, Kick/);
+  await expect(page.locator("[data-grid-legend]")).toContainText("K Kick");
+  await page.locator("body").press("2");
+  await expect(page.locator('.kitty-step[data-bar="0"][data-step="0"]')).toHaveText(/^[1-7]$/);
+  await expect(page.locator('.kitty-step[data-bar="0"][data-step="0"]')).toHaveAttribute("aria-label", /Oktave/);
+  await expect(page.locator("[data-grid-legend]")).toContainText("1 Grundton");
+});
+
+test("rastet Break → Drop mit kurzem Tippen ein und löst ihn mit dem nächsten", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.getByRole("button", { name: /START/ }).click();
+  await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
+  const breakButton = page.locator("[data-perf-break]");
+  await breakButton.click();
+  await expect(breakButton).toHaveAttribute("data-state", "break");
+  await page.waitForTimeout(400);
+  await expect(breakButton).toHaveAttribute("data-state", "break");
+  await breakButton.click();
+  await expect(breakButton).toHaveAttribute("data-state", "drop");
+  await expect(breakButton).toHaveAttribute("data-state", "idle", { timeout: 6_000 });
+});
+
+test("springt per Sprunglink direkt ins Step-Raster", async ({ page }) => {
+  await page.keyboard.press("Tab");
+  const skip = page.getByRole("link", { name: "Zum Step-Raster springen" });
+  await expect(skip).toBeFocused();
+  await expect(skip).toBeInViewport();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".kitty-step").first()).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator('.kitty-step[data-bar="0"][data-step="1"]')).toBeFocused();
+});
+
+test("benennt Mixer-Kanäle und erklärt Bedienelemente beim Fokus", async ({ page }) => {
+  await expect(page.getByRole("button", { name: "M – Acid Bass stumm" })).toBeVisible();
+  await expect(page.getByRole("slider", { name: "Lautstärke Acid Bass" })).toHaveAttribute("aria-valuetext", /\d+ %/);
+  await expect(page.getByRole("slider", { name: "Swing" })).toHaveAttribute("aria-valuetext", /\d+ %/);
+  const chain = page.getByRole("switch", { name: "Szenenfolge" });
+  await expect(chain).toHaveAttribute("aria-description", /nacheinander/);
+  await chain.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(page.locator(".kitty-hint")).toBeVisible();
+  await expect(page.locator(".kitty-hint")).toContainText("nacheinander");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".kitty-hint")).toBeHidden();
+});
+
+test("führt bei vollen Plätzen von Neu zur Projektliste und benennt per Enter um", async ({ page }) => {
+  await page.getByRole("button", { name: "Projekte" }).click();
+  const dialog = page.getByRole("dialog", { name: "Lokale Projekte" });
+  await expect(dialog.getByRole("button", { name: /Kitty Hybrid/ })).toHaveAttribute("aria-current", "true");
+  await dialog.getByLabel("Neuer Name").fill("Keller");
+  await dialog.getByLabel("Neuer Name").press("Enter");
+  await expect(page.locator(".project-name")).toHaveText("Keller");
+  for (let count = 1; count < 8; count += 1) {
+    await dialog.getByRole("button", { name: "Duplizieren" }).click();
+    await expect(dialog).toBeHidden();
+    await page.getByRole("button", { name: "Projekte" }).click();
+  }
+  await expect(dialog.getByText("Alle Plätze belegt")).toBeVisible();
+  await dialog.getByRole("button", { name: "Fertig" }).click();
+  await page.getByRole("button", { name: "Neu" }).click();
+  await expect(page.getByRole("dialog", { name: "Lokale Projekte" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Neues Werkprojekt" })).toHaveCount(0);
 });
