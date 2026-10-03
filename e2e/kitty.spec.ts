@@ -384,7 +384,8 @@ test("macht aus einem Reglerzug einen einzigen Undo-Schritt", async ({ page }) =
 test("nimmt das Live-Spiel als WAV auf", async ({ page }, testInfo) => {
   test.setTimeout(60_000);
   await page.locator("body").press("a");
-  await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
+  // The record button says "Aufnahme stoppen" by now as well.
+  await expect(page.getByRole("button", { name: /■ STOP/ })).toBeVisible({ timeout: 10_000 });
   const record = page.locator(".live-record");
   await expect(record).toHaveAttribute("aria-pressed", "true");
   await expect(record.locator("output")).not.toHaveText("0:00", { timeout: 5_000 });

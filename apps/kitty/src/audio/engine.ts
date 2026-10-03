@@ -1,4 +1,9 @@
-import * as Tone from "tone";
+import { Cues, MasterRecorder, playThroughSilentSwitch, Transport, type Recording } from "klangwerk";
+import {
+  atStep, connect, currentSound, currentTime, DetuneSource, FmVoice, FrequencyEnvelope, Gain, LeanChorus, LeanEnvelope, LeanFilter, LeanStereoWidener, LeanTone, LeanVibrato,
+  midiFrequency, Noise, NoiseVoice, now, OneShotTone, Panner, setBpm, SleepyOutput, soundContext, SoundNode, swapSound, toFrequency, toSeconds, useContext,
+  type BasicWave, type Sound, type ToneSpec,
+} from "klangwerk/tone";
 import { createFactoryProject } from "../domain/defaults";
 import { scaleChord, scaleDegreeMidi } from "../domain/music";
 import { acidStepParameters, presetDefinition, safeEffectParameters } from "../domain/sound-presets";
@@ -26,12 +31,8 @@ import {
   setTrackGraphVolume,
   type TrackGraph,
 } from "./graph";
-import { LeanChorus, LeanFilter, LeanStereoWidener, LeanVibrato, SleepyOutput } from "./lean";
-import { DetuneSource, FmVoice, LeanEnvelope, LeanTone, NoiseVoice, OneShotTone, type BasicWave, type ToneSpec } from "./lean-voices";
 import { BarQueuedTransport, type SequencerPosition } from "./transport";
 import type { PerformanceFilter } from "./performance";
-import { MasterRecorder, type Recording } from "./recorder";
-import { playThroughSilentSwitch } from "./ios-audio";
 
 export interface AudioStatusEvent { status: "idle" | "starting" | "playing" | "suspended" | "error"; message: string; }
 export interface PlayheadEvent extends SequencerPosition { peak: number; trackPeaks: Record<TrackKind, number>; triggeredTracks: TrackKind[]; ducking: boolean; acidLegato: boolean; chainNext: number | null; }
@@ -105,8 +106,8 @@ export class ToneAudioEngine {
   private initialized = false;
   private graphReady: Promise<void> | null = null;
   private strips: Record<TrackKind, TrackStrip> | null = null;
-  private masterNodes: Tone.ToneAudioNode[] = [];
-  private masterFader: Tone.Gain | null = null;
+  private masterNodes: SoundNode[] = [];
+  private masterFader: Gain | null = null;
   private masterPerformance: PerformanceFilter | null = null;
   private readonly performanceMuted = new Set<TrackKind>();
   private readonly performancePending = new Map<TrackKind, boolean>();
@@ -119,9 +120,20 @@ export class ToneAudioEngine {
   private activePresets: Partial<Record<TrackKind, SoundPresetId>> = {};
   private appliedTempo: number | null = null;
   private tempoOverride: number | null = null;
-  private appliedSwing: number | null = null;
   private appliedMasterVolume: number | null = null;
-  private scheduleId: number | null = null;
+  /** Steps an offline render still plays (`null` live). */
+  private offlineSteps: number | null = null;
+  /** The context this engine plays in (made current while it builds or schedules, as Tone's global one was). */
+  private sound: Sound | null = null;
+  private ownContext: AudioContext | null = null;
+  private cues: Cues | null = null;
+  private readonly transport = new Transport({
+    step: (_step, time) => this.withSound(() => atStep(this.transport.nextTime, () => this.tick(time))),
+    stepDuration: () => 60 / this.tempo / 4,
+    // Tone's swing on sixteenths: the odd ones lean back by swing · 2/3 of a sixteenth.
+    swing: () => (this.project.swing * 2) / 3,
+    lookahead: 0.1,
+  });
   private meterFrame: number | null = null;
   private lastMeterRead = 0;
   private peak = 0;
@@ -134,16 +146,17 @@ export class ToneAudioEngine {
 
   async initialize(): Promise<void> {
     // Already prepared (e.g. recording or MIDI while music plays): report nothing new.
-    if (this.initialized && Tone.getContext().state === "running") return;
+    if (this.initialized && this.sound?.context.state === "running") return;
     this.emitStatus("starting", "Audio wird vorbereitet …");
     // iPhones and iPads: play even with the ring/silent switch on silent (live sound only).
     if (!this.options.offline) playThroughSilentSwitch();
-    await Tone.start();
+    this.attachContext();
+    if (this.ownContext && this.ownContext.state !== "running") await this.ownContext.resume().catch(() => undefined);
     if (!this.initialized) {
-      this.graphReady ??= this.createGraph().finally(() => { this.graphReady = null; });
+      this.graphReady ??= this.withSound(() => this.createGraph()).finally(() => { this.graphReady = null; });
       await this.graphReady;
     }
-    if (Tone.getContext().state !== "running") {
+    if (this.context.state !== "running" && !(this.context instanceof OfflineAudioContext)) {
       this.emitStatus("suspended", "Audio ist pausiert – Start erneut anklicken");
       return;
     }
@@ -154,15 +167,14 @@ export class ToneAudioEngine {
   async start(scene: number, at?: number): Promise<void> {
     try {
       await this.initialize();
-      if (Tone.getContext().state !== "running") return;
-      const transport = Tone.getTransport();
-      transport.stop();
-      transport.cancel();
-      transport.position = 0;
+      if (this.context.state !== "running") return;
+      this.transport.halt();
       this.clock.start(scene);
-      this.applyProject();
-      this.scheduleId = transport.scheduleRepeat((time) => this.tick(time), "16n");
-      transport.start(at === undefined ? "+0.05" : contextTimeAt(at));
+      this.withSound(() => {
+        this.applyProject();
+        // The first steps come with the clock's next beat, as with Tone's transport.
+        this.transport.begin(this.context, at === undefined ? now() + 0.05 : contextTimeAt(at));
+      });
       this.emitStatus("playing", "Wiedergabe läuft");
     } catch (error) {
       this.stop(false);
@@ -172,12 +184,10 @@ export class ToneAudioEngine {
 
   stop(emit = true): void {
     this.resetPerformance();
-    const transport = Tone.getTransport();
-    transport.stop();
-    if (this.scheduleId !== null) transport.clear(this.scheduleId);
-    this.scheduleId = null;
+    this.transport.halt();
+    this.cues?.cancel();
     this.clock.reset();
-    this.releaseAll();
+    if (this.sound) this.withSound(() => this.releaseAll());
     this.peak = 0;
     this.trackPeaks = zeroPeaks();
     if (emit) this.emitStatus("idle", "Gestoppt");
@@ -185,8 +195,9 @@ export class ToneAudioEngine {
 
   /** Test hook: builds the graph and the voice banks of the current presets, as a playing session would. */
   async prepareAllVoices(): Promise<void> {
-    if (!this.initialized) await this.createGraph();
-    for (const track of TRACK_KINDS) this.bankFor(track);
+    this.attachContext();
+    if (!this.initialized) await this.withSound(() => this.createGraph());
+    this.withSound(() => { for (const track of TRACK_KINDS) this.bankFor(track); });
   }
 
   queueScene(scene: number): number | null { return this.clock.queue(scene); }
@@ -197,19 +208,19 @@ export class ToneAudioEngine {
     if (this.performanceMuted.has(track) === muted) this.performancePending.delete(track);
     else this.performancePending.set(track, muted);
     // Without a running transport there is no bar line to wait for.
-    if (this.scheduleId === null) this.applyPendingMutes();
+    if (!this.transport.running) this.applyPendingMutes();
     this.emitPerformance();
   }
 
   setBreak(active: boolean): void {
-    const now = Tone.now();
+    const now = this.sound ? this.withSound(nowTime) : 0;
     if (active) {
       this.breakActive = true;
       this.dropPending = false;
       this.masterPerformance?.startRise(now, (2 * 240) / this.tempo);
     } else if (this.breakActive) {
       this.dropPending = true;
-      if (this.scheduleId === null) this.drop(now);
+      if (!this.transport.running) this.drop(now);
     }
     this.emitPerformance();
   }
@@ -223,8 +234,9 @@ export class ToneAudioEngine {
 
   async startRecording(): Promise<void> {
     if (!this.initialized) await this.initialize();
-    if (Tone.getContext().state !== "running") throw new Error("Audio ist pausiert");
-    await this.recorder.start(Tone.getDestination());
+    const fader = this.masterFader;
+    if (this.context.state !== "running" || !(this.context instanceof AudioContext) || !fader) throw new Error("Audio ist pausiert");
+    await this.recorder.start(this.context, fader.output);
   }
 
   stopRecording(): Promise<Recording> { return this.recorder.stop(); }
@@ -248,8 +260,8 @@ export class ToneAudioEngine {
   private resetPerformance(): void {
     this.performanceMuted.clear();
     this.performancePending.clear();
-    if (this.breakActive || this.dropPending) this.drop(Tone.now());
-    this.masterPerformance?.setFilter(0);
+    if (this.breakActive || this.dropPending) this.drop(this.sound ? this.withSound(nowTime) : 0);
+    if (this.sound) this.withSound(() => this.masterPerformance?.setFilter(0));
     this.emitPerformance();
   }
 
@@ -261,7 +273,7 @@ export class ToneAudioEngine {
   /** An external MIDI clock's tempo replaces the project tempo until `null`; the project keeps its own. */
   setTempoOverride(bpm: number | null): void {
     this.tempoOverride = bpm === null ? null : Math.max(40, Math.min(240, bpm));
-    if (this.initialized) this.applyProject();
+    if (this.initialized) this.withSound(() => this.applyProject());
   }
 
   private get tempo(): number { return this.tempoOverride ?? this.project.tempo; }
@@ -269,39 +281,45 @@ export class ToneAudioEngine {
   /** Builds the full signal path in the current (offline) context and schedules `plan` on its transport. */
   async scheduleOffline(plan: RenderPlan): Promise<void> {
     if (!this.options.offline) throw new Error("scheduleOffline braucht eine Offline-Engine");
-    const transport = Tone.getTransport();
-    transport.bpm.value = this.project.tempo;
+    this.attachContext();
+    this.withSound(() => setBpm(this.project.tempo));
     this.appliedTempo = this.project.tempo;
     this.clock.setChain(plan.chainRepeats);
     this.clock.start(plan.startScene);
-    await this.createGraph();
-    let remaining = plan.steps;
-    this.scheduleId = transport.scheduleRepeat((time) => {
-      if (remaining <= 0) return;
-      remaining -= 1;
-      this.tick(time);
-    }, "16n", 0);
+    await this.withSound(() => this.createGraph());
+    this.offlineSteps = plan.steps;
+    this.transport.begin(this.context, 0);
+  }
+
+  /** Schedules an offline render up to `seconds` (see `scheduleOffline`). */
+  renderUntil(seconds: number): void {
+    this.transport.renderUntil(seconds);
   }
 
   syncProject(project: ProjectV1): void {
     this.project = structuredClone(project);
-    if (this.initialized) this.applyProject();
+    if (this.initialized) this.withSound(() => this.applyProject());
   }
 
   onPlayhead(listener: (event: PlayheadEvent) => void): () => void { this.playheadListeners.add(listener); return () => this.playheadListeners.delete(listener); }
   onStatus(listener: (event: AudioStatusEvent) => void): () => void { this.statusListeners.add(listener); return () => this.statusListeners.delete(listener); }
 
   dispose(): void {
-    if (this.initialized || this.scheduleId !== null) this.stop(false);
+    if (this.initialized || this.transport.running) this.stop(false);
     else this.clock.reset();
     if (this.meterFrame !== null) cancelAnimationFrame(this.meterFrame);
-    for (const bank of this.banks.values()) bank.dispose();
+    if (this.sound) {
+      this.withSound(() => {
+        for (const bank of this.banks.values()) bank.dispose();
+        Object.values(this.strips ?? {}).forEach((strip) => {
+          strip.nodes.forEach((node) => node.dispose());
+          strip.meter.dispose();
+        });
+        this.masterNodes.forEach((node) => node.dispose());
+      });
+    }
     this.banks.clear();
-    Object.values(this.strips ?? {}).forEach((strip) => {
-      strip.nodes.forEach((node) => node.dispose());
-      strip.meter.dispose();
-    });
-    this.masterNodes.forEach((node) => node.dispose());
+    this.transport.dispose();
     this.masterMeter?.dispose();
     this.strips = null;
     this.masterNodes = [];
@@ -310,7 +328,6 @@ export class ToneAudioEngine {
     this.masterMeter = null;
     this.activePresets = {};
     this.appliedTempo = null;
-    this.appliedSwing = null;
     this.appliedMasterVolume = null;
     this.initialized = false;
   }
@@ -319,8 +336,8 @@ export class ToneAudioEngine {
     const meter = createPeakMeter();
     // Stems skip the master: its output goes nowhere and each strip feeds its own channel pair.
     const master = this.options.stems
-      ? createMasterGraph(new Tone.Gain(0), this.project.masterVolume)
-      : createMasterGraph(Tone.getDestination(), this.project.masterVolume, meter.node);
+      ? createMasterGraph(new Gain(0), this.project.masterVolume)
+      : createMasterGraph(this.context.destination, this.project.masterVolume, meter.node);
     this.masterNodes = master.nodes;
     this.masterFader = master.fader;
     this.masterPerformance = master.performance;
@@ -343,22 +360,17 @@ export class ToneAudioEngine {
   }
 
   private applyProject(): void {
-    const transport = Tone.getTransport();
+    // The transport reads tempo and swing for every step; note values follow the tempo from here.
     if (this.appliedTempo !== this.tempo) {
-      transport.bpm.rampTo(this.tempo, 0.08);
+      setBpm(this.tempo);
       this.appliedTempo = this.tempo;
-    }
-    if (this.appliedSwing !== this.project.swing) {
-      transport.swing = this.project.swing;
-      transport.swingSubdivision = "16n";
-      this.appliedSwing = this.project.swing;
     }
     if (this.appliedMasterVolume !== this.project.masterVolume) {
       this.masterFader?.gain.rampTo(faderGain(this.project.masterVolume), 0.04);
       this.appliedMasterVolume = this.project.masterVolume;
     }
     const gains = effectiveTrackGains(this.project);
-    const playing = this.scheduleId !== null;
+    const playing = this.transport.running;
     for (const track of TRACK_KINDS) {
       const strip = this.strips?.[track];
       if (!strip) continue;
@@ -381,7 +393,11 @@ export class ToneAudioEngine {
   }
 
   private tick(time: number): void {
-    if (!this.options.offline && Tone.getContext().state !== "running") {
+    if (this.offlineSteps !== null) {
+      if (this.offlineSteps <= 0) return;
+      this.offlineSteps -= 1;
+    }
+    if (!this.options.offline && this.context.state !== "running") {
       this.stop(false);
       this.emitStatus("suspended", "Audio wurde vom Browser pausiert – Start erneut anklicken");
       return;
@@ -391,7 +407,7 @@ export class ToneAudioEngine {
     if (position.step === 0 && (this.performancePending.size > 0 || this.dropPending)) {
       this.applyPendingMutes();
       if (this.dropPending) this.drop(time);
-      if (!this.options.offline) Tone.getDraw().schedule(() => this.emitPerformance(), time);
+      if (!this.options.offline) this.cues?.at(time, () => this.emitPerformance());
     }
     const plays = this.plannedSteps(position);
     const ducking = this.hasAudibleKick(plays.get("drums"));
@@ -400,10 +416,10 @@ export class ToneAudioEngine {
     const triggeredTracks = TRACK_KINDS.filter((track) => this.triggerTrack(track, plays.get(track), position, time));
     if (this.options.offline) return;
     const chainNext = this.clock.chainNext;
-    Tone.getDraw().schedule(() => {
+    this.cues?.at(time, () => {
       const event = { ...position, peak: this.peak, trackPeaks: { ...this.trackPeaks }, triggeredTracks, ducking, acidLegato, chainNext };
       for (const listener of this.playheadListeners) listener(event);
-    }, time);
+    });
   }
 
   /**
@@ -513,29 +529,60 @@ export class ToneAudioEngine {
     this.meterFrame = requestAnimationFrame((nextTimestamp) => this.monitorMeters(nextTimestamp));
   }
 
+  /**
+   * The context this engine plays in: offline engines take the current one
+   * (made current by the render or test); live ones make an AudioContext on
+   * the first tap and keep it current, as Tone's global context was.
+   */
+  private attachContext(): void {
+    if (this.sound) return;
+    if (!this.options.offline) {
+      const context = new AudioContext({ latencyHint: "interactive" });
+      this.ownContext = context;
+      useContext(context);
+      this.cues = new Cues(() => context.currentTime);
+    }
+    this.sound = currentSound();
+  }
+
+  private get context(): BaseAudioContext {
+    if (!this.sound) throw new Error("initialize() first");
+    return this.sound.context;
+  }
+
+  /** Runs `action` with this engine's context current. */
+  private withSound<T>(action: () => T): T {
+    const previous = swapSound(this.sound);
+    try {
+      return action();
+    } finally {
+      swapSound(previous);
+    }
+  }
+
   private emitStatus(status: AudioStatusEvent["status"], message: string): void { for (const listener of this.statusListeners) listener({ status, message }); }
 }
 
-function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneAudioNode, alwaysAwake: boolean): VoiceBank {
+function createDrumBank(preset: SoundPresetMap["drums"], destination: SoundNode, alwaysAwake: boolean): VoiceBank {
   const definition = presetDefinition("drums", preset);
   const recipe = definition.synthesis;
-  const output = new Tone.Gain(definition.level);
+  const output = new Gain(definition.level);
   const sleep = new SleepyOutput(output, destination, alwaysAwake);
   const snareFilter = new LeanFilter({ type: "highpass", frequency: recipe.snare.highpass, rolloff: -12 });
   const panScale = preset === "steel" ? 2.15 : preset === "rumble" ? 0.42 : 1;
-  const snarePan = new Tone.Panner(-0.08 * panScale).connect(output);
+  const snarePan = new Panner(-0.08 * panScale).connect(output);
   snareFilter.connect(snarePan);
   const clapFilter = new LeanFilter({ type: "highpass", frequency: recipe.clap.highpass, rolloff: -24 });
-  const clapPan = new Tone.Panner(0.17 * panScale).connect(output);
+  const clapPan = new Panner(0.17 * panScale).connect(output);
   clapFilter.connect(clapPan);
   const closedHatFilter = new LeanFilter({ type: "highpass", frequency: recipe.hats.closedHighpass, rolloff: -24 });
-  const closedHatPan = new Tone.Panner(-0.23 * panScale).connect(output);
+  const closedHatPan = new Panner(-0.23 * panScale).connect(output);
   closedHatFilter.connect(closedHatPan);
   const openHatFilter = new LeanFilter({ type: "highpass", frequency: recipe.hats.openHighpass, rolloff: -24 });
-  const openHatPan = new Tone.Panner(0.27 * panScale).connect(output);
+  const openHatPan = new Panner(0.27 * panScale).connect(output);
   openHatFilter.connect(openHatPan);
   const tomFilter = new LeanFilter({ type: "lowpass", frequency: recipe.tom.lowpass, rolloff: -12 });
-  const tomPan = new Tone.Panner(-0.12 * panScale).connect(output);
+  const tomPan = new Panner(-0.12 * panScale).connect(output);
   tomFilter.connect(tomPan);
   // Tone.MembraneSynth: exponential attack, pitch falling from f·2^octaves to f.
   const kick = new OneShotTone({ kind: "basic", type: recipe.kick.oscillator as BasicWave }, {
@@ -553,14 +600,14 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneA
   // One shared synthetic noise source feeds independent envelopes. This keeps
   // the six drum identities and overlapping clap/hat transients without
   // running a separate full-band source for every layer.
-  const drumNoise = new Tone.Noise(recipe.snare.noise).start();
+  const drumNoise = new Noise(recipe.snare.noise).start();
   const snareNoise = new LeanEnvelope({ attack: 0.001, decay: recipe.snare.decay, sustain: 0, release: 0.07 }).connect(snareFilter);
   const clapNoises = Array.from({ length: 3 }, () => new LeanEnvelope({ attack: 0.001, decay: recipe.clap.decay, sustain: 0, release: 0.04 }).connect(clapFilter));
   const closedHat = new LeanEnvelope({ attack: 0.001, decay: recipe.hats.closedDecay, sustain: 0, release: Math.max(0.025, recipe.hats.closedDecay * 0.45) }).connect(closedHatFilter);
   const openHat = new LeanEnvelope({ attack: 0.001, decay: recipe.hats.openDecay, sustain: 0, release: Math.max(0.025, recipe.hats.openDecay * 0.45) }).connect(openHatFilter);
   drumNoise.fan(snareNoise, ...clapNoises, closedHat, openHat);
-  const triggerHat = (hat: LeanEnvelope, noteLength: Tone.Unit.Time, time: number, velocity: number) => {
-    hat.triggerAttackRelease(Tone.Time(noteLength).toSeconds(), time, velocity);
+  const triggerHat = (hat: LeanEnvelope, noteLength: number | string, time: number, velocity: number) => {
+    hat.triggerAttackRelease(toSeconds(noteLength), time, velocity);
   };
   const transient = recipe.kick.transient > 0
     ? new LeanEnvelope({ attack: 0.0005, decay: 0.018, sustain: 0, release: 0.012 }).connect(output)
@@ -585,7 +632,7 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneA
         envelope: { attack: 0.003, decay: recipe.kick.subTail.decay, sustain: 0, release: recipe.kick.subTail.release, attackCurve: "exponential" },
       }).connect(subHighpass)
     : null;
-  const nodes: Tone.ToneAudioNode[] = [kick, snareBody, tom, drumNoise, snareNoise, ...clapNoises, closedHat, openHat, snareFilter, snarePan, clapFilter, clapPan, closedHatFilter, closedHatPan, openHatFilter, openHatPan, tomFilter, tomPan, output];
+  const nodes: SoundNode[] = [kick, snareBody, tom, drumNoise, snareNoise, ...clapNoises, closedHat, openHat, snareFilter, snarePan, clapFilter, clapPan, closedHatFilter, closedHatPan, openHatFilter, openHatPan, tomFilter, tomPan, output];
   if (transient) nodes.push(transient);
   if (subHighpass && subFilter && subSaturator && subTail) nodes.push(subTail, subHighpass, subFilter, subSaturator);
   const trigger = (voice: DrumVoice, step: Step, time: number, velocity: number) => {
@@ -624,16 +671,16 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: Tone.ToneA
   };
 }
 
-function createAcidBank(preset: SoundPresetMap["acid"], destination: Tone.ToneAudioNode, alwaysAwake: boolean): VoiceBank {
+function createAcidBank(preset: SoundPresetMap["acid"], destination: SoundNode, alwaysAwake: boolean): VoiceBank {
   const definition = presetDefinition("acid", preset);
   const recipe = definition.synthesis;
-  const output = new Tone.Gain(definition.level);
+  const output = new Gain(definition.level);
   const sleep = new SleepyOutput(output, destination, alwaysAwake);
   const ampEnvelope = new LeanEnvelope(definition.envelope).connect(output);
   const voiceDrive = new CharacterSaturator(definition.channel.saturationCurve);
   voiceDrive.connect(ampEnvelope);
   const filter = new LeanFilter({ type: "lowpass", frequency: recipe.filterBase, Q: recipe.filterQ, rolloff: -24 }).connect(voiceDrive);
-  const filterEnvelope = new Tone.FrequencyEnvelope({
+  const filterEnvelope = new FrequencyEnvelope({
     attack: 0.002,
     decay: recipe.filterDecay,
     sustain: recipe.filterSustain,
@@ -643,7 +690,7 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: Tone.ToneAu
     exponent: 2.35,
   });
   filter.modulateFrequency(filterEnvelope);
-  const oscillator = new LeanTone(output.context, { kind: "basic", type: recipe.oscillator }, 110).start(output.context.currentTime);
+  const oscillator = new LeanTone(output.context, { kind: "basic", type: recipe.oscillator }, 110).start(currentTime());
   oscillator.output.connect(filter.input);
   let active = false;
   return {
@@ -654,7 +701,7 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: Tone.ToneAu
       const accent = step.dynamics === "accent";
       const performance = acidStepParameters(preset, accent, context.legato);
       const effects = safeEffectParameters("acid", preset, macros, accent);
-      const frequency = Tone.Frequency(note, "midi").toFrequency();
+      const frequency = midiFrequency(note);
       oscillator.frequency.cancelAndHoldAtTime(time);
       if (context.legato && active) oscillator.frequency.exponentialRampToValueAtTime(frequency, time + performance.portamento);
       else oscillator.frequency.setValueAtTime(frequency, time);
@@ -684,7 +731,7 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: Tone.ToneAu
     },
     dispose: () => {
       sleep.dispose();
-      oscillator.stop(output.context.currentTime);
+      oscillator.stop(currentTime());
       oscillator.dispose();
       [filterEnvelope, filter, voiceDrive, ampEnvelope, output].forEach((node) => node.dispose());
     },
@@ -698,13 +745,13 @@ function analogVoice(spec: ToneSpec, envelope: { attack: number; decay: number; 
   return new OneShotTone(spec, { envelope, detune: true }) as MelodicVoice;
 }
 
-function createStabBank(preset: SoundPresetMap["stab"], destination: Tone.ToneAudioNode, alwaysAwake: boolean): VoiceBank {
+function createStabBank(preset: SoundPresetMap["stab"], destination: SoundNode, alwaysAwake: boolean): VoiceBank {
   const definition = presetDefinition("stab", preset);
   const recipe = definition.synthesis;
-  const output = new Tone.Gain(definition.level);
+  const output = new Gain(definition.level);
   const sleep = new SleepyOutput(output, destination, alwaysAwake);
   const voiceFilter = new LeanFilter({ type: "lowpass", frequency: definition.voiceFilter.base, Q: definition.voiceFilter.q, rolloff: -24 }).connect(output);
-  const filterEnvelope = new Tone.FrequencyEnvelope({
+  const filterEnvelope = new FrequencyEnvelope({
     attack: definition.voiceFilter.attack,
     decay: definition.voiceFilter.decay,
     sustain: definition.voiceFilter.sustain,
@@ -716,7 +763,7 @@ function createStabBank(preset: SoundPresetMap["stab"], destination: Tone.ToneAu
   voiceFilter.modulateFrequency(filterEnvelope);
   const voiceCount = preset === "chord" ? 4 : 3;
   const panPositions = preset === "chord" ? [-0.44, 0.18, -0.12, 0.46] : preset === "flash" ? [-0.32, 0, 0.32] : [-0.29, 0, 0.29];
-  const pans = Array.from({ length: voiceCount }, (_, index) => new Tone.Panner(panPositions[index]!).connect(voiceFilter));
+  const pans = Array.from({ length: voiceCount }, (_, index) => new Panner(panPositions[index]!).connect(voiceFilter));
   const voices: MelodicVoice[] = Array.from({ length: voiceCount }, (_, index) => {
     const voice = recipe.engine === "fm"
       ? new FmVoice({
@@ -733,7 +780,7 @@ function createStabBank(preset: SoundPresetMap["stab"], destination: Tone.ToneAu
   });
   return {
     trigger: (notes, step, time, velocity, macros, context) => {
-      sleep.wake(time, time + Tone.Time(duration(step)).toSeconds() + Math.max(definition.envelope.release, definition.voiceFilter.release) + SLEEP_MARGIN_SECONDS);
+      sleep.wake(time, time + toSeconds(duration(step)) + Math.max(definition.envelope.release, definition.voiceFilter.release) + SLEEP_MARGIN_SECONDS);
       filterEnvelope.baseFrequency = definition.voiceFilter.base * (0.72 + clamp01(macros.color) * 0.58);
       filterEnvelope.octaves = definition.voiceFilter.octaves * (0.82 + clamp01(macros.color) * 0.26);
       filterEnvelope.triggerAttack(time, velocity);
@@ -742,7 +789,7 @@ function createStabBank(preset: SoundPresetMap["stab"], destination: Tone.ToneAu
         const note = notes[index];
         if (note === undefined) return;
         if (recipe.engine === "analog") voice.detune.rampTo((index - (voiceCount - 1) / 2) * recipe.detune * (0.65 + clamp01(macros.motion) * 0.55), 0.035, time);
-        voice.triggerAttackRelease(Tone.Frequency(note, "midi").toFrequency(), seconds(duration(step)), time, velocity);
+        voice.triggerAttackRelease(midiFrequency(note), seconds(duration(step)), time, velocity);
       });
     },
     release: (time) => { voices.forEach((voice) => voice.triggerRelease(time)); filterEnvelope.triggerRelease(time); },
@@ -750,17 +797,17 @@ function createStabBank(preset: SoundPresetMap["stab"], destination: Tone.ToneAu
   };
 }
 
-function createRaveBank(preset: SoundPresetMap["rave"], destination: Tone.ToneAudioNode, alwaysAwake: boolean): VoiceBank {
+function createRaveBank(preset: SoundPresetMap["rave"], destination: SoundNode, alwaysAwake: boolean): VoiceBank {
   const definition = presetDefinition("rave", preset);
   const recipe = definition.synthesis;
-  const output = new Tone.Gain(definition.level);
+  const output = new Gain(definition.level);
   const sleep = new SleepyOutput(output, destination, alwaysAwake);
   const chorus = new LeanChorus({ frequency: definition.modulation.frequency * 0.34, delayTime: 3.2, depth: 0.42, feedback: 0.04, wet: definition.modulation.chorusWet }).connect(output);
   const vibrato = new LeanVibrato({ frequency: definition.modulation.frequency, depth: definition.modulation.vibratoDepth, maxDelay: 0.004, wet: 0.16 }).connect(chorus);
-  const voiceBus = new Tone.Gain(1).connect(vibrato);
-  const voices: { voice: MelodicVoice; semitones: number; level: number; baseDetune: number; pan: Tone.Panner }[] = [];
+  const voiceBus = new Gain(1).connect(vibrato);
+  const voices: { voice: MelodicVoice; semitones: number; level: number; baseDetune: number; pan: Panner }[] = [];
   const addVoice = (voice: MelodicVoice, semitones: number, level: number, baseDetune: number, panValue: number) => {
-    const pan = new Tone.Panner(panValue).connect(voiceBus);
+    const pan = new Panner(panValue).connect(voiceBus);
     voice.connect(pan);
     voices.push({ voice, semitones, level, baseDetune, pan });
   };
@@ -782,7 +829,7 @@ function createRaveBank(preset: SoundPresetMap["rave"], destination: Tone.ToneAu
   }
   return {
     trigger: (notes, step, time, velocity, macros, context) => {
-      sleep.wake(time, time + Tone.Time(duration(step)).toSeconds() + definition.envelope.release + SLEEP_MARGIN_SECONDS);
+      sleep.wake(time, time + toSeconds(duration(step)) + definition.envelope.release + SLEEP_MARGIN_SECONDS);
       const note = notes[0];
       if (note === undefined) return;
       const motion = clamp01(macros.motion);
@@ -798,7 +845,7 @@ function createRaveBank(preset: SoundPresetMap["rave"], destination: Tone.ToneAu
           voice.detune.setValueAtTime(-82, time);
           voice.detune.linearRampToValueAtTime(78, time + Math.min(0.34, stepDurationSeconds(step.length, context.tempo) * 0.8));
         }
-        voice.triggerAttackRelease(Tone.Frequency(note + semitones, "midi").toFrequency(), seconds(duration(step)), time, clamp01(velocity * level));
+        voice.triggerAttackRelease(midiFrequency(note + semitones), seconds(duration(step)), time, clamp01(velocity * level));
       });
     },
     release: (time) => voices.forEach(({ voice }) => voice.triggerRelease(time)),
@@ -806,9 +853,9 @@ function createRaveBank(preset: SoundPresetMap["rave"], destination: Tone.ToneAu
   };
 }
 
-function createTextureBank(preset: SoundPresetMap["texture"], destination: Tone.ToneAudioNode, alwaysAwake: boolean): VoiceBank {
+function createTextureBank(preset: SoundPresetMap["texture"], destination: SoundNode, alwaysAwake: boolean): VoiceBank {
   const definition = presetDefinition("texture", preset);
-  const output = new Tone.Gain(definition.level);
+  const output = new Gain(definition.level);
   const sleep = new SleepyOutput(output, destination, alwaysAwake);
   const recipe = definition.synthesis;
   if (recipe.source === "drone") {
@@ -816,16 +863,16 @@ function createTextureBank(preset: SoundPresetMap["texture"], destination: Tone.
     const widener = new LeanStereoWidener(0.68).connect(output);
     highFilter.connect(widener);
     const lowFilter = new LeanFilter({ type: "lowpass", frequency: 165, Q: 0.4, rolloff: -24 }).connect(output);
-    const sawGain = new Tone.Gain(recipe.sawLevel).connect(highFilter);
-    const sineGain = new Tone.Gain(recipe.sineLevel).connect(lowFilter);
+    const sawGain = new Gain(recipe.sawLevel).connect(highFilter);
+    const sineGain = new Gain(recipe.sineLevel).connect(lowFilter);
     const saw = new OneShotTone({ kind: "fat", type: "sawtooth", count: recipe.unisonCount, spread: recipe.spread }, { envelope: definition.envelope }).connect(sawGain);
     const sine = new OneShotTone({ kind: "basic", type: "sine" }, { envelope: definition.envelope }).connect(sineGain);
     return {
       trigger: (notes, step, time, velocity) => {
-        sleep.wake(time, time + Tone.Time(step.length === "short" ? "8n" : "2n").toSeconds() + definition.envelope.release + SLEEP_MARGIN_SECONDS);
+        sleep.wake(time, time + toSeconds(step.length === "short" ? "8n" : "2n") + definition.envelope.release + SLEEP_MARGIN_SECONDS);
         const note = notes[0] ?? 36;
-        saw.triggerAttackRelease(Tone.Frequency(note, "midi").toFrequency(), seconds(step.length === "short" ? "8n" : "2n"), time, velocity * 0.78);
-        sine.triggerAttackRelease(Tone.Frequency(note - 12, "midi").toFrequency(), seconds(step.length === "short" ? "8n" : "2n"), time, velocity * 0.64);
+        saw.triggerAttackRelease(midiFrequency(note), seconds(step.length === "short" ? "8n" : "2n"), time, velocity * 0.78);
+        sine.triggerAttackRelease(midiFrequency(note - 12), seconds(step.length === "short" ? "8n" : "2n"), time, velocity * 0.64);
       },
       release: (time) => { saw.triggerRelease(time); sine.triggerRelease(time); },
       dispose: () => { sleep.dispose(); [saw, sine, sawGain, sineGain, highFilter, lowFilter, widener, output].forEach((node) => node.dispose()); },
@@ -833,7 +880,7 @@ function createTextureBank(preset: SoundPresetMap["texture"], destination: Tone.
   }
 
   const widener = recipe.source === "riser" ? new LeanStereoWidener(0.18).connect(output) : null;
-  const panner = recipe.source === "noise" ? new Tone.Panner(-0.16).connect(output) : null;
+  const panner = recipe.source === "noise" ? new Panner(-0.16).connect(output) : null;
   const filter = new LeanFilter({ type: "bandpass", frequency: recipe.filterStart, Q: recipe.source === "riser" ? 1.05 : 1.8, rolloff: -24 }).connect(widener ?? panner ?? output);
   const noise = new NoiseVoice(recipe.noise, definition.envelope).connect(filter);
   return {
@@ -855,7 +902,7 @@ function createTextureBank(preset: SoundPresetMap["texture"], destination: Tone.
         panner.pan.linearRampToValueAtTime(0.2 * direction, time + sweepSeconds);
       }
       const noteLength = recipe.source === "riser" ? sweepSeconds : step.length === "long" ? "2n" : "8n";
-      sleep.wake(time, time + Tone.Time(noteLength).toSeconds() + definition.envelope.release + SLEEP_MARGIN_SECONDS);
+      sleep.wake(time, time + toSeconds(noteLength) + definition.envelope.release + SLEEP_MARGIN_SECONDS);
       noise.triggerAttackRelease(seconds(noteLength), time, velocity);
     },
     release: (time) => noise.triggerRelease(time),
@@ -863,10 +910,11 @@ function createTextureBank(preset: SoundPresetMap["texture"], destination: Tone.
   };
 }
 
-function hertz(note: Tone.Unit.Frequency): number { return Tone.Frequency(note).toFrequency(); }
-function seconds(time: Tone.Unit.Time): number { return Tone.Time(time).toSeconds(); }
+function hertz(note: number | string): number { return toFrequency(note); }
+function seconds(time: number | string): number { return toSeconds(time); }
+function nowTime(): number { return now(); }
 function dynamicsVelocity(step: Step): number { return step.dynamics === "ghost" ? 0.4 : step.dynamics === "accent" ? 0.94 : 0.68; }
-function duration(step: Step): Tone.Unit.Time { return step.length === "short" ? "32n" : step.length === "long" ? "8n" : "16n"; }
+function duration(step: Step): string { return step.length === "short" ? "32n" : step.length === "long" ? "8n" : "16n"; }
 function zeroPeaks(): Record<TrackKind, number> { return Object.fromEntries(TRACK_KINDS.map((track) => [track, 0])) as Record<TrackKind, number>; }
 function clamp01(value: number): number { return Math.max(0, Math.min(1, value)); }
 function trackParameterKey(preset: SoundPresetId, macros: TrackMacros, accent: boolean): string {
@@ -874,7 +922,7 @@ function trackParameterKey(preset: SoundPresetId, macros: TrackMacros, accent: b
 }
 
 function createPeakMeter(): PeakMeter {
-  const node = Tone.getContext().createAnalyser();
+  const node = soundContext().createAnalyser();
   node.fftSize = 512;
   node.smoothingTimeConstant = 0;
   const samples = new Float32Array(node.fftSize);
@@ -968,14 +1016,14 @@ export function renderAudioPresetAtLevel(track: TrackKind, preset: SoundPresetId
 
 async function renderOfflinePreset(track: TrackKind, preset: SoundPresetId, macros: TrackMacros): Promise<OfflineAudioMetrics> {
   const tempo = 150;
-  const buffer = await Tone.Offline(async () => {
-    Tone.getTransport().bpm.value = tempo;
-    const master = createMasterGraph(Tone.getDestination(), 0.9);
+  const buffer = await offline(2.7, async () => {
+    setBpm(tempo);
+    const master = createMasterGraph(soundContext().destination, 0.9);
     const strip = createTrackGraph(track, preset, macros, 0.88, master.input);
     await strip.ready;
     const bank = createVoiceBank(track, preset, strip.input);
     schedulePresetExample(bank, track, preset, tempo, macros);
-  }, 2.7, 2, 44_100);
+  });
   return analyzeOfflineBuffer(buffer);
 }
 
@@ -988,9 +1036,9 @@ async function renderOfflineFactory(profile: "hard" | "acid" | "hybrid", tempo: 
     }
   }
   const beat = 60 / project.tempo;
-  const buffer = await Tone.Offline(async () => {
-    Tone.getTransport().bpm.value = project.tempo;
-    const master = createMasterGraph(Tone.getDestination(), project.masterVolume);
+  const buffer = await offline(beat * 4 + 1.1, async () => {
+    setBpm(project.tempo);
+    const master = createMasterGraph(soundContext().destination, project.masterVolume);
     const gains = effectiveTrackGains(project);
     const strips = {} as Record<TrackKind, TrackGraph>;
     const banks = {} as Record<TrackKind, VoiceBank>;
@@ -1026,11 +1074,23 @@ async function renderOfflineFactory(profile: "hard" | "acid" | "hybrid", tempo: 
         banks[track].trigger(notes, step, triggerTime, velocity, pattern.macros, context);
       }
     }
-  }, beat * 4 + 1.1, 2, 44_100);
+  });
   return analyzeOfflineBuffer(buffer);
 }
 
-function createVoiceBank(track: TrackKind, preset: SoundPresetId, destination: Tone.ToneAudioNode, alwaysAwake = true): VoiceBank {
+/** Builds in a fresh stereo offline context at 44.1 kHz and renders it, as Tone.Offline did (everything scheduled before the render). */
+async function offline(seconds: number, build: () => Promise<void>): Promise<AudioBuffer> {
+  const context = new OfflineAudioContext(2, Math.floor(seconds * 44_100), 44_100);
+  const previous = useContext(context);
+  try {
+    await build();
+  } finally {
+    swapSound(previous);
+  }
+  return context.startRendering();
+}
+
+function createVoiceBank(track: TrackKind, preset: SoundPresetId, destination: SoundNode, alwaysAwake = true): VoiceBank {
   return track === "drums" ? createDrumBank(preset as SoundPresetMap["drums"], destination, alwaysAwake)
     : track === "acid" ? createAcidBank(preset as SoundPresetMap["acid"], destination, alwaysAwake)
       : track === "stab" ? createStabBank(preset as SoundPresetMap["stab"], destination, alwaysAwake)
@@ -1065,7 +1125,7 @@ function schedulePresetExample(bank: VoiceBank, track: TrackKind, preset: SoundP
   if (track !== "texture") bank.trigger(firstNotes.map((value) => value + 3), makeStep(), 0.72 + performanceOffsetSeconds(track), 0.72 * (0.78 + macros.density * 0.2), macros, context(4));
 }
 
-function applyOfflineDuck(gain: Tone.Gain, track: TrackKind, tempo: number, time: number): void {
+function applyOfflineDuck(gain: Gain, track: TrackKind, tempo: number, time: number): void {
   const envelope = duckEnvelope(track, tempo);
   gain.gain.cancelAndHoldAtTime(time);
   gain.gain.linearRampToValueAtTime(envelope.gain, time + envelope.attack);
@@ -1073,7 +1133,7 @@ function applyOfflineDuck(gain: Tone.Gain, track: TrackKind, tempo: number, time
   gain.gain.exponentialRampToValueAtTime(1, time + envelope.end);
 }
 
-function analyzeOfflineBuffer(buffer: Tone.ToneAudioBuffer): OfflineAudioMetrics {
+function analyzeOfflineBuffer(buffer: AudioBuffer): OfflineAudioMetrics {
   const left = buffer.getChannelData(0);
   const right = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : left;
   const lowLeft = onePoleLowpass(left, 180, buffer.sampleRate);
@@ -1196,7 +1256,7 @@ function energyDb(energy: number, frames: number): number {
  * at the same moment. Times already past start as soon as possible.
  */
 export function contextTimeAt(epochMs: number): number {
-  const raw = Tone.getContext().rawContext as unknown as AudioContext;
+  const raw = soundContext() as AudioContext;
   const stamp = typeof raw.getOutputTimestamp === "function" ? raw.getOutputTimestamp() : null;
   const target = stamp?.contextTime !== undefined && stamp.performanceTime
     ? stamp.contextTime + (epochMs - (performance.timeOrigin + stamp.performanceTime)) / 1000
@@ -1205,12 +1265,12 @@ export function contextTimeAt(epochMs: number): number {
 }
 
 /** Routes each stereo output to its own channel pair of the (offline) destination. */
-function connectStems(outputs: readonly Tone.ToneAudioNode[]): void {
-  const raw = Tone.getContext().rawContext;
+function connectStems(outputs: readonly SoundNode[]): void {
+  const raw = soundContext();
   const merger = raw.createChannelMerger(outputs.length * 2);
   outputs.forEach((output, index) => {
     const splitter = raw.createChannelSplitter(2);
-    Tone.connect(output, splitter as unknown as AudioNode);
+    connect(output, splitter);
     splitter.connect(merger, 0, index * 2);
     splitter.connect(merger, 1, index * 2 + 1);
   });

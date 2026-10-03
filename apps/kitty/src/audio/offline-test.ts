@@ -1,4 +1,4 @@
-import * as Tone from "tone";
+import { swapSound, useContext } from "klangwerk/tone";
 import { renderAudioAcceptanceSuite, renderAudioPresetAtLevel, ToneAudioEngine, type OfflineAudioAcceptanceSuite, type OfflineAudioMetrics } from "./engine";
 import { createFactoryProject } from "../domain/defaults";
 import type { SoundPresetId, TrackKind } from "../domain/types";
@@ -30,14 +30,13 @@ async function countEngineNodes(): Promise<EngineNodeCount> {
       return create(...args);
     };
   }
-  const original = Tone.getContext();
-  Tone.setContext(new Tone.OfflineContext(native as never));
+  const previous = useContext(native);
   const engine = new ToneAudioEngine(createFactoryProject("hybrid"));
   try {
     await engine.prepareAllVoices();
   } finally {
     engine.dispose();
-    Tone.setContext(original);
+    swapSound(previous);
   }
   return { total: Object.values(counts).reduce((sum, count) => sum + count, 0), constantSources: counts.createConstantSource ?? 0 };
 }

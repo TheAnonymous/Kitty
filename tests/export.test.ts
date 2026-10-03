@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { planSeconds, renderPlan } from "@/audio/render";
-import { audibleRange, encodePcm16Wav, encodeWav, trimmedLength, type PcmSource } from "@/audio/wav";
+import { audibleRange, encodePcm16Wav, encodeWav, trimmedLength, type PcmSource } from "klangwerk";
 import { createFactoryProject } from "@/domain/defaults";
 import { isValidProject, sanitizeProject } from "@/domain/sanitize";
 import { KittyStore } from "@/store/store";

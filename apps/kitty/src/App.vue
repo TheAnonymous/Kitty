@@ -18,11 +18,10 @@ import {
 } from "@kinky-vibes/ui";
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { ToneAudioEngine, type PerformanceState } from "./audio/engine";
-import { MAX_RECORDING_SECONDS } from "./audio/recorder";
 import { stemsArchive } from "./audio/stems";
 import { AppLink, fitTempo, type LinkPeer } from "./link";
 import { planSeconds, renderPlan, renderProject, type ExportMode } from "./audio/render";
-import { audibleRange, encodePcm16Wav, encodeWav, trimmedLength } from "./audio/wav";
+import { audibleRange, encodePcm16Wav, encodeWav, MAX_RECORDING_SECONDS, trimmedLength } from "klangwerk";
 import { MidiLink, type MidiStatus } from "./midi";
 import { Tour, type TourStep } from "./tour";
 import { PlaybackWakeLock } from "./wake-lock";
