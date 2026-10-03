@@ -57,6 +57,24 @@ describe("zentraler Store", () => {
     expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[1]!.enabled).toBe(false);
   });
 
+  it("schaltet einen gewählten Step beim zweiten Druck aus und mit Entf direkt", () => {
+    const store = new KittyStore(createFactoryProject());
+    const steps = () => store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps;
+
+    store.dispatch({ type: "step/press", bar: 0, step: 0 });
+    expect(steps()[0]!.enabled).toBe(true);
+    store.dispatch({ type: "step/press", bar: 0, step: 0 });
+    expect(steps()[0]!.enabled).toBe(false);
+    store.dispatch({ type: "history/undo" });
+    expect(steps()[0]!.enabled).toBe(true);
+
+    store.dispatch({ type: "step/press", bar: 0, step: 1 });
+    expect(steps()[1]!.enabled).toBe(true);
+    store.dispatch({ type: "step/clear", bar: 0, step: 0 });
+    expect(steps()[0]!.enabled).toBe(false);
+    expect(store.getState().ui).toMatchObject({ selectedBar: 0, selectedStep: 0 });
+  });
+
   it("nimmt UI-Auswahl nicht in Undo auf und macht Musikänderungen rückgängig", () => {
     const store = new KittyStore(createFactoryProject());
     store.dispatch({ type: "ui/select-track", track: "rave" });

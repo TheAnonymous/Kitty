@@ -75,14 +75,33 @@ geschickt, und wer den Link öffnet, übernimmt eine eigene Kopie.
 - `Umschalt+1–4`: Szene auswählen oder an der nächsten Taktgrenze vormerken
 - `V`: Variation in der gewählten Stärke
 - `R`: typisches Pattern für Spur und Profil
-- `Strg/Cmd+Z`, `Strg/Cmd+Umschalt+Z` oder `Strg/Cmd+Y`: Undo/Redo
-- Klick oder Enter: vorhandenen Step auswählen, freien Step aktivieren
-- `Step ausschalten`: den im Detailbereich ausgewählten Step entfernen
+- `Strg/Cmd+Z`, `Strg/Cmd+Umschalt+Z` oder `Strg/Cmd+Y`: Rückgängig/Wiederholen
+- Klick oder Enter: freien Step aktivieren, vorhandenen Step auswählen; ein
+  zweiter Klick auf den ausgewählten Step schaltet ihn aus
+- `Entf` oder `Rücktaste` im Raster, oder `Step ausschalten`: Step entfernen
+- Pfeiltasten: im Raster von Step zu Step
 - `?`: Hilfe mit allen Tastenkürzeln und der Einführungstour
+
+Die Kürzel wirken überall außer in Eingabefeldern und Auswahllisten, also auch
+direkt nach einem Klick auf einen Button. Nach einem Mausklick ist die
+Leertaste Start/Stop; hat ein Button per Tastatur den Fokus, löst sie ihn aus.
 
 Beim ersten Besuch führt eine kurze Tour durch Start, Szenen, Spuren und
 Szenenfolge. Ein Zug an einem Regler ist ein einziger Undo-Schritt. Solange
 Musik läuft, bleibt der Bildschirm an.
+
+**Im Raster lesen:** Drum-Steps zeigen ihre Stimmen als Buchstaben (K Kick,
+S Snare, C Clap, H Closed Hat, O Open Hat, T Tom), Steps der Melodiespuren die
+Tonstufe als Zahl (1 Grundton bis 7 Septime). Mit **Vorhören** (an, abschaltbar
+in den Step-Details) erklingt ein Step einmal, wenn du ihn bei gestoppter Musik
+setzt oder änderst.
+
+**Zugänglichkeit:** Jedes Bedienelement erklärt sich beim Überfahren und beim
+Tastaturfokus in einem kurzen Hinweis, den Screenreader als Beschreibung
+vorlesen; `Esc` schließt ihn. Ein Sprunglink führt direkt ins Step-Raster,
+Regler nennen ihren Wert mit Einheit (BPM, %), und alle Texte erreichen
+mindestens 4,5 : 1 Kontrast. Die Browser-Suite prüft das mit axe gegen
+WCAG 2.2 AA.
 
 **Im Raster:** Jeder Step hat eine **Chance** (100, 75, 50 oder 25 %), die bei
 jedem Durchlauf neu würfelt, und Drums, Acid, Stab und Rave eine
@@ -95,7 +114,10 @@ hörst, und speichert es als WAV. Mit **Live-Tasten** (`P`) schalten `1`–`5`
 Spuren am nächsten Takt stumm. Der **Filter** federt beim Loslassen zurück
 (`F` halten schließt, `Umschalt+F` öffnet). **Break → Drop** (`B` halten) nimmt
 Kick und Acid heraus und lässt einen Hochpass steigen; beim Loslassen kommt der
-Drop am nächsten Takt. Nichts davon landet im Projekt oder in der Undo-Liste.
+Drop am nächsten Takt. Am Button rastet ein kurzes Tippen den Break ein, das
+nächste bringt den Drop. Stumm sieht live wie im Mixer gleich aus:
+bernsteinfarben und durchgestrichen. Nichts davon landet im Projekt oder in der
+Undo-Liste.
 
 **Gleichtakt:** Ist die Groovebox in einem zweiten Tab offen und dort wie hier
 **Gleichtakt** an, starten und stoppen beide gemeinsam; wer startet, gibt das
@@ -151,8 +173,9 @@ zusammen mit Groovebox und der Übersichtsseite ein Release;
 ## Grenzen
 
 Kein Backend, Cloud-Sync, Sample-Import oder PWA; das Arrangement ist die feste
-Szenenfolge. Smartphone und Tablet bekommen eine Hinweisseite mit Hörprobe statt
-der Oberfläche. Referenzbrowser ist Chromium; Firefox läuft in der Smoke-Suite
+Szenenfolge. Fenster unter 1024 Pixel Breite, also Smartphone und Tablet, aber
+auch ein stark vergrößerter Desktop, bekommen eine Hinweisseite mit Hörprobe;
+dort lässt sich die volle Oberfläche trotzdem öffnen und seitlich scrollen. Referenzbrowser ist Chromium; Firefox läuft in der Smoke-Suite
 mit (ohne MIDI-Clock-Tests). Safari ist ungetestet: Playwrights WebKit braucht
 Ubuntu-Bibliotheken (ICU 74, libxml2.so.2, flite), die der Prüfrechner nicht hat.
 

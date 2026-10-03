@@ -193,6 +193,24 @@ export class ToneAudioEngine {
     if (emit) this.emitStatus("idle", "Gestoppt");
   }
 
+  /**
+   * Plays one step once while the music is stopped, so a step that was just
+   * set or changed can be heard. Chance is ignored and the note starts fresh.
+   */
+  async audition(scene: number, track: TrackKind, bar: number, stepIndex: number): Promise<void> {
+    if (this.options.offline || this.transport.running) return;
+    await this.initialize();
+    if (this.transport.running || this.context.state !== "running") return;
+    const pattern = this.patternFor(scene, track);
+    const step = pattern?.bars[bar]?.steps[stepIndex];
+    if (!pattern || !step?.enabled) return;
+    if (effectiveTrackGains(this.project)[track] <= 0) return;
+    this.withSound(() => {
+      this.applyProject();
+      this.triggerTrack(track, { pattern, step: { ...step, slide: false }, at: { bar, step: stepIndex } }, { scene, bar, step: stepIndex, switched: false, pass: 0 }, now() + 0.03, true);
+    });
+  }
+
   /** Test hook: builds the graph and the voice banks of the current presets, as a playing session would. */
   async prepareAllVoices(): Promise<void> {
     this.attachContext();
@@ -446,7 +464,8 @@ export class ToneAudioEngine {
     return plays;
   }
 
-  private triggerTrack(track: TrackKind, play: PlannedStep | undefined, position: SequencerPosition, time: number): boolean {
+  /** `single` plays the step on its own (an audition): no slide from or into its neighbours. */
+  private triggerTrack(track: TrackKind, play: PlannedStep | undefined, position: SequencerPosition, time: number, single = false): boolean {
     if (!play) return false;
     const { pattern, step, at } = play;
     const preset = this.project.soundPresets[track];
@@ -457,7 +476,7 @@ export class ToneAudioEngine {
     const velocity = clamp01(dynamicsVelocity(step) * (0.78 + pattern.macros.density * 0.2) * positionalVelocity(at.bar, at.step));
     const bank = this.bankFor(track);
     const hits = allowsRatchet(track) ? stepRatchet(step) : 1;
-    const legato = track === "acid" && hits === 1 ? acidLegatoContext(pattern.bars, at.bar, at.step, pattern.loopSteps) : { legato: false, continues: false };
+    const legato = track === "acid" && hits === 1 && !single ? acidLegatoContext(pattern.bars, at.bar, at.step, pattern.loopSteps) : { legato: false, continues: false };
     const context: TriggerContext = {
       tempo: this.tempo,
       scene: position.scene,

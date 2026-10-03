@@ -34,3 +34,16 @@ test("zeigt unterhalb der Mindestbreite eine Handy-Seite mit Rückweg", async ({
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
+
+test("öffnet auf schmalen Fenstern auf Wunsch die volle Oberfläche, etwa bei Zoom", async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 800 });
+  await expect(page.locator(".kitty-shell")).toBeHidden();
+  await page.getByRole("button", { name: "Volle Oberfläche trotzdem öffnen" }).click();
+  await expect(page.locator(".kitty-shell")).toBeVisible();
+  await expect(page.locator(".desktop-gate")).toBeHidden();
+  await page.reload();
+  await expect(page.locator(".kitty-shell")).toBeVisible();
+  await page.getByRole("button", { name: "Hinweisseite statt Oberfläche zeigen" }).click();
+  await expect(page.locator(".kitty-shell")).toBeHidden();
+  await expect(page.locator(".desktop-gate")).toBeVisible();
+});

@@ -20,7 +20,6 @@ import { LOOP_LENGTHS, MAX_SWING, MAX_TEMPO, MIN_TEMPO, RATCHETS, SCENE_REPEATS,
 export type Action =
   | { type: "ui/select-scene"; scene: number }
   | { type: "ui/select-track"; track: TrackKind }
-  | { type: "ui/select-bar"; bar: number }
   | { type: "ui/select-step"; bar: number; step: number }
   | { type: "ui/toggle-lock"; bar: number }
   | { type: "ui/variation-amount"; amount: VariationAmount }
@@ -39,6 +38,7 @@ export type Action =
   | { type: "mix/volume"; track: TrackKind; value: number }
   | { type: "step/press"; bar: number; step: number }
   | { type: "step/disable" }
+  | { type: "step/clear"; bar: number; step: number }
   | { type: "step/drum-voice"; voice: DrumVoice }
   | { type: "step/degree"; value: number }
   | { type: "step/octave"; value: number }
@@ -126,7 +126,6 @@ export class KittyStore {
     switch (action.type) {
       case "ui/select-scene": ui.selectedScene = clamp(action.scene, 0, 3); ui.selectedStep = null; return false;
       case "ui/select-track": ui.selectedTrack = action.track; ui.selectedStep = null; return false;
-      case "ui/select-bar": ui.selectedBar = clamp(action.bar, 0, 3); ui.selectedStep = null; return false;
       case "ui/select-step": ui.selectedBar = clamp(action.bar, 0, 3); ui.selectedStep = clamp(action.step, 0, 15); return false;
       case "ui/toggle-lock": { const bar = clamp(action.bar, 0, 3); ui.locks[ui.selectedTrack][bar] = !ui.locks[ui.selectedTrack][bar]; return false; }
       case "ui/variation-amount": ui.variationAmount = action.amount; return false;
@@ -148,16 +147,31 @@ export class KittyStore {
       case "mix/solo": { const mix = project.mix.find((entry) => entry.instrument === action.track); if (!mix) return false; mix.solo = !mix.solo; if (mix.solo) mix.muted = false; return true; }
       case "mix/volume": { const mix = project.mix.find((entry) => entry.instrument === action.track); return mix ? assign(mix, "volume", clampNumber(action.value, 0, 1)) : false; }
       case "step/press": {
+        // A free step turns on; an active one is selected first and turns off on the next press.
         const bar = clamp(action.bar, 0, 3);
         const stepIndex = clamp(action.step, 0, 15);
         const step = findStep(this.state, bar, stepIndex);
+        const wasSelected = ui.selectedBar === bar && ui.selectedStep === stepIndex;
         ui.selectedBar = bar;
         ui.selectedStep = stepIndex;
-        if (!step || step.enabled) return false;
+        if (!step) return false;
+        if (step.enabled) {
+          if (!wasSelected) return false;
+          Object.assign(step, emptyStep());
+          return true;
+        }
         Object.assign(step, activateStep(ui.selectedTrack, stepIndex));
         return true;
       }
       case "step/disable": {
+        const step = selectedStep(this.state);
+        if (!step?.enabled) return false;
+        Object.assign(step, emptyStep());
+        return true;
+      }
+      case "step/clear": {
+        ui.selectedBar = clamp(action.bar, 0, 3);
+        ui.selectedStep = clamp(action.step, 0, 15);
         const step = selectedStep(this.state);
         if (!step?.enabled) return false;
         Object.assign(step, emptyStep());
