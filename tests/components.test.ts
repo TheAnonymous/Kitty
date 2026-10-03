@@ -9,13 +9,15 @@ import { createFactoryProject } from "@/domain/defaults";
 describe("zugängliche Vue-Bedienung", () => {
   it("bewegt den Rasterfokus mit Pfeilen und aktiviert mit Enter", async () => {
     const pattern = createFactoryProject().scenes[0]!.tracks[0]!;
-    const wrapper = mount(StepGrid, { attachTo: document.body, props: { pattern, selectedBar: 0, selectedStep: null, locks: [false, false, false, false], playheadBar: 0, playheadStep: 0, playing: false } });
+    const wrapper = mount(StepGrid, { attachTo: document.body, props: { pattern, trackName: "Drum Machine", selectedBar: 0, selectedStep: null, locks: [false, false, false, false], playheadBar: 0, playheadStep: 0, playing: false } });
     const cells = wrapper.findAll(".kitty-step");
     await cells[0]!.trigger("focus");
     await cells[0]!.trigger("keydown", { key: "ArrowRight" });
     expect(document.activeElement).toBe(cells[1]!.element);
     await cells[1]!.trigger("keydown", { key: "Enter" });
     expect(wrapper.emitted("press")?.at(-1)).toEqual([0, 1]);
+    await cells[1]!.trigger("keydown", { key: "Delete" });
+    expect(wrapper.emitted("clear")?.at(-1)).toEqual([0, 1]);
     expect(wrapper.findAll(".kitty-step")).toHaveLength(64);
     wrapper.unmount();
   });
@@ -40,7 +42,8 @@ describe("zugängliche Vue-Bedienung", () => {
 
   it("hat im Step-Raster keine automatisch erkennbaren kritischen A11y-Verstöße", async () => {
     const pattern = createFactoryProject().scenes[0]!.tracks[1]!;
-    const wrapper = mount(StepGrid, { attachTo: document.body, props: { pattern, selectedBar: 0, selectedStep: 0, locks: [false, true, false, false], playheadBar: 0, playheadStep: 0, playing: true } });
+    const wrapper = mount(StepGrid, { attachTo: document.body, props: { pattern, trackName: "Acid Bass", selectedBar: 0, selectedStep: 0, locks: [false, true, false, false], playheadBar: 0, playheadStep: 0, playing: true } });
+    // Contrast needs real rendering; e2e/a11y.spec.ts checks it in the browser.
     const result = await axe.run(wrapper.element, { rules: { "color-contrast": { enabled: false } } });
     expect(result.violations.filter((entry) => entry.impact === "critical" || entry.impact === "serious")).toEqual([]);
     wrapper.unmount();
