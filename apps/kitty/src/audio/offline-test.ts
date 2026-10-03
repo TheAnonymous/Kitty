@@ -31,7 +31,8 @@ async function countEngineNodes(): Promise<EngineNodeCount> {
     };
   }
   const previous = useContext(native);
-  const engine = new ToneAudioEngine(createFactoryProject("hybrid"));
+  // Offline, so it builds in the counting context instead of opening its own AudioContext.
+  const engine = new ToneAudioEngine(createFactoryProject("hybrid"), { offline: true });
   try {
     await engine.prepareAllVoices();
   } finally {
