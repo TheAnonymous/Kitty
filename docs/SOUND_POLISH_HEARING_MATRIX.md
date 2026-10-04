@@ -22,11 +22,11 @@ Je Preset: bei allen Makros auf Mitte hören, dann jedes Makro einmal langsam vo
 
 | Spur / Preset | geprüft | Worauf achten |
 | --- | --- | --- |
-| Drums — Warehouse | [ ] | 909-Body in der Tonart, Click, Clap mit Raum, metallische Hats, Ride |
-| Drums — Stahl | [ ] | kurzer höherer Punch, harter Click, helle Hats nicht schneidend |
-| Drums — Rumble | [ ] | trockener Attack, Fahne auf dem Kick-Ton, im Hard-Profil nicht dröhnend |
-| Acid — Silverbox | [ ] | klassisch, Accent, direktes Slide; Farbe von 0 bis 1 wie ein Cutoff-Regler |
-| Acid — Venom | [ ] | schnell, scharf, kontrollierte Sättigung |
+| Drums — Warehouse | [ ] | 909-Body in der Tonart, Click, Rumble, Clap mit Raum, metallische Hats, Ride |
+| Drums — Stahl | [ ] | kurzer höherer Punch, harter Click, wenig Rumble, helle Hats nicht schneidend |
+| Drums — Rumble | [ ] | trockener Attack, Fahne auf dem Kick-Ton, pumpender Rumble, im Hard-Profil nicht dröhnend |
+| Acid — Silverbox | [ ] | klassisch, Accent, direktes Slide; Farbe von 0 bis 1 wie ein Cutoff-Regler, Druck bis kurz vors Pfeifen |
+| Acid — Venom | [ ] | schnell, scharf, kontrollierte Sättigung, Ping-Pong-Echo |
 | Acid — Rubber | [ ] | tief, rund, längstes Glide |
 | Stab — Beton | [ ] | kurz, dunkel, eng; Anschlag ohne Knackser |
 | Stab — Chord | [ ] | offenes Root–Fifth–Third–Octave-Voicing |
@@ -89,10 +89,26 @@ Fills; die 303 läuft hinter ihrer Lautstärkehüllkurve durch einen Verzerrer
 (asymmetrisches Clipping, Ton-Tiefpass, Pegelausgleich), den das Druck-Makro
 hochfährt; der Ride entsteht aus dem Hat-Metall mit Glockenband.
 
+Dann, wieder nur gemessen: **Diode-Ladder, Akzent-Sweep und Rumble.** Die 303
+läuft durch einen Diode-Ladder-Filter als AudioWorklet (Vierpol, verkoppelte
+Stufen, Rückkopplung über einen Hochpass bei 70 Hz, sättigende Eingangsstufe,
+doppelt überabgetastet). Mit der Resonanz dünnt das Band unter dem Cutoff um
+bis zu rund 20 dB aus, der Peak steht etwa 10 dB über den Nachbar-Obertönen; der
+Klangschwerpunkt einer typischen Linie liegt bei rund 900 statt 630 Hz. Akzente
+laden eine Sweep-Spannung (Anstieg 16 ms, Abfluss 0,2 s), die den Cutoff um
+bis zu 1,4 Oktaven hebt; dicht folgende Akzente klettern, mehr Resonanz macht
+den Sweep tiefer. Der Kick-Rumble ist ein dunkler Faltungshall (Rauschen mit
+festem Startwert, Tiefpass 125–180 Hz, Ausklang 0,8–1,5 s, mono), der bei jeder
+Kick auf −22 dB duckt und über etwa einen Beat zurückkommt; Warehouse +1,5 dB,
+Stahl +0,8 dB, Rumble +0,7 dB gegenüber der Kick allein. Die Acid-Presets sind
+dafür im Mix rund 1 dB lauter, Venom hat ein Stereo-Echo.
+
 Beim Hören besonders: Passt die Kick-Tonhöhe zum Bass (auch nach einem
 Tonartwechsel von Auto-Acid)? Hats hell, aber nicht scharf? 303 bei Farbe und
 Druck auf 1 nicht schmerzhaft, Verzerrer dreckig statt kratzig? Ride im Peak
-hörbar, aber nicht zischend? Rumble im Hard-Profil nicht dröhnend?
+hörbar, aber nicht zischend? Rumble im Hard-Profil nicht dröhnend, pumpt er
+zwischen den Kicks? Quietscht die 303 bei Druck über der Mitte, ohne zu
+pfeifen, und klettern Akzent-Ketten hörbar?
 
 ## Abschluss
 

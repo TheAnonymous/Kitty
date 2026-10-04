@@ -6,6 +6,8 @@ import type { SoundPresetId, TrackKind } from "../domain/types";
 export interface EngineNodeCount {
   total: number;
   constantSources: number;
+  /** AudioWorklet nodes: the 303's diode ladder, unless it fell back to biquads. */
+  worklets: number;
 }
 
 export interface KittyAudioTestApi {
@@ -30,6 +32,16 @@ async function countEngineNodes(): Promise<EngineNodeCount> {
       return create(...args);
     };
   }
+  // Worklet nodes (the 303's ladder) are constructed, not created by the context.
+  const NativeWorklet = globalThis.AudioWorkletNode;
+  if (typeof NativeWorklet === "function") {
+    globalThis.AudioWorkletNode = class extends NativeWorklet {
+      constructor(...args: ConstructorParameters<typeof AudioWorkletNode>) {
+        super(...args);
+        counts.AudioWorkletNode = (counts.AudioWorkletNode ?? 0) + 1;
+      }
+    };
+  }
   const previous = useContext(native);
   // Offline, so it builds in the counting context instead of opening its own AudioContext.
   const engine = new ToneAudioEngine(createFactoryProject("hybrid"), { offline: true });
@@ -38,8 +50,9 @@ async function countEngineNodes(): Promise<EngineNodeCount> {
   } finally {
     engine.dispose();
     swapSound(previous);
+    if (typeof NativeWorklet === "function") globalThis.AudioWorkletNode = NativeWorklet;
   }
-  return { total: Object.values(counts).reduce((sum, count) => sum + count, 0), constantSources: counts.createConstantSource ?? 0 };
+  return { total: Object.values(counts).reduce((sum, count) => sum + count, 0), constantSources: counts.createConstantSource ?? 0, worklets: counts.AudioWorkletNode ?? 0 };
 }
 
 export function installAudioTestApi(): void {

@@ -6,13 +6,17 @@ import {
 } from "klangwerk/tone";
 import { createFactoryProject } from "../domain/defaults";
 import { scaleChord, scaleDegreeMidi } from "../domain/music";
-import { acidCutoff, acidDrive, acidEnvelopeOctaves, acidStepParameters, presetDefinition, safeEffectParameters } from "../domain/sound-presets";
+import { acidCutoff, acidDrive, acidEnvelopeOctaves, acidStepParameters, kickRumbleSend, presetDefinition, safeEffectParameters } from "../domain/sound-presets";
 import { allowsRatchet, loopPosition, sceneSteps, stepChance, stepRatchet } from "../domain/patterns";
 import type { DrumVoice, ProjectV1, SoundPresetId, SoundPresetMap, Step, TrackKind, TrackMacros, TrackPattern } from "../domain/types";
 import { SOUND_PRESETS, TRACK_KINDS } from "../domain/types";
 import { effectiveTrackGains } from "../store/store";
 import {
+  ACCENT_SWEEP_DECAY_SECONDS,
+  ACCENT_SWEEP_RISE_END,
+  ACCENT_SWEEP_RISE_SECONDS,
   acidLegatoContext,
+  chargeAccentSweep,
   dbMeterValue,
   duckEnvelope,
   faderGain,
@@ -24,6 +28,7 @@ import {
   rmsToDb,
   stabVoicing,
   stepDurationSeconds,
+  type AccentSweep,
 } from "./polish";
 import {
   applyTrackGraphParameters,
@@ -34,7 +39,9 @@ import {
   type TrackGraph,
 } from "./graph";
 import { AcidDrive } from "./distortion";
+import { DiodeLadder, diodeLadderLoaded, ladderResonance } from "./ladder";
 import { MetalNoise } from "./metal";
+import { KickRumble } from "./rumble";
 import { BarQueuedTransport, type SequencerPosition } from "./transport";
 import type { PerformanceFilter } from "./performance";
 
@@ -75,8 +82,8 @@ interface TriggerContext {
 
 /** Silence margin after a bank's envelopes have released before it is disconnected. */
 const SLEEP_MARGIN_SECONDS = 0.5;
-/** Longest drum decay (sub tail 0.68 s + release 0.32 s) plus margin. */
-const DRUM_TAIL_SECONDS = 1.5;
+/** Longest drum tail (the rumble hall, up to 1.5 s) plus margin. */
+const DRUM_TAIL_SECONDS = 2;
 
 /** Live-only layer on top of the project: nothing here is saved or undoable. */
 export interface PerformanceState {
@@ -622,6 +629,9 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: SoundNode,
     pitch: { octaves: membraneOctaves(recipe.kick.octaves), pitchDecay: recipe.kick.pitchDecay },
     envelope: { ...definition.envelope, sustain: 0.01, attackCurve: "exponential" },
   }).connect(output);
+  // The rumble: the kick into a dark hall that every kick pumps down.
+  const rumble = new KickRumble(recipe.kick.rumble).connect(output);
+  kick.connect(rumble);
   const snareBody = new OneShotTone({ kind: "basic", type: "triangle" }, {
     pitch: { octaves: membraneOctaves(2.6), pitchDecay: 0.022 },
     envelope: { attack: 0.001, decay: recipe.snare.bodyDecay, sustain: 0, release: 0.09, attackCurve: "exponential" },
@@ -675,13 +685,15 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: SoundNode,
         envelope: { attack: 0.003, decay: recipe.kick.subTail.decay, sustain: 0, release: recipe.kick.subTail.release, attackCurve: "exponential" },
       }).connect(subHighpass)
     : null;
-  const nodes: SoundNode[] = [kick, snareBody, tom, drumNoise, snareNoise, ...clapNoises, clapTail, metal, hatNoise, closedHat, openHat, ride, rideBell, rideFilter, ridePan, snareFilter, snarePan, clapFilter, clapPan, closedHatFilter, closedHatPan, openHatFilter, openHatPan, tomFilter, tomPan, output];
+  const nodes: SoundNode[] = [kick, rumble, snareBody, tom, drumNoise, snareNoise, ...clapNoises, clapTail, metal, hatNoise, closedHat, openHat, ride, rideBell, rideFilter, ridePan, snareFilter, snarePan, clapFilter, clapPan, closedHatFilter, closedHatPan, openHatFilter, openHatPan, tomFilter, tomPan, output];
   if (transient && transientFilter) nodes.push(transient, transientFilter);
   if (subHighpass && subFilter && subSaturator && subTail) nodes.push(subTail, subHighpass, subFilter, subSaturator);
-  const trigger = (voice: DrumVoice, step: Step, time: number, velocity: number, root: number | undefined) => {
+  const trigger = (voice: DrumVoice, step: Step, time: number, velocity: number, root: number | undefined, macros: TrackMacros, tempo: number) => {
     const voiceTime = time + performanceOffsetSeconds("drums", voice);
     if (voice === "kick") {
       const kickHz = kickFrequency(root, hertz(recipe.kick.note));
+      rumble.pump(voiceTime, tempo);
+      rumble.setSend(kickRumbleSend(preset, macros.space), voiceTime);
       kick.triggerAttackRelease(kickHz, seconds(step.length === "long" ? "8n" : "16n"), voiceTime, velocity * recipe.kick.velocity);
       transient?.triggerAttackRelease(0.018, voiceTime, velocity * recipe.kick.transient);
       // The rumble rings on the kick's own note, so it stays in tune with the bass.
@@ -698,12 +710,12 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: SoundNode,
     else tom.triggerAttackRelease(hertz(recipe.tom.note), seconds("8n"), voiceTime, velocity * recipe.tom.level);
   };
   return {
-    trigger: (notes, step, time, velocity) => {
+    trigger: (notes, step, time, velocity, macros, context) => {
       sleep.wake(time, time + DRUM_TAIL_SECONDS);
       const layerGain = 1 / Math.sqrt(Math.max(1, step.drumVoices.length));
       step.drumVoices.forEach((voice) => {
         try {
-          trigger(voice, step, time, velocity * layerGain, notes[0]);
+          trigger(voice, step, time, velocity * layerGain, notes[0], macros, context.tempo);
         } catch (error) {
           throw new Error(`${voice}: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -729,7 +741,16 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: SoundNode, 
   const ampEnvelope = new LeanEnvelope(definition.envelope).connect(drive);
   const voiceDrive = new CharacterSaturator(definition.channel.saturationCurve);
   voiceDrive.connect(ampEnvelope);
-  const filter = new LeanFilter({ type: "lowpass", frequency: recipe.filterBase, Q: recipe.filterQ, rolloff: -24 }).connect(voiceDrive);
+  // The diode ladder where AudioWorklets run (loaded with the acid strip), else the biquads it replaced.
+  const ladder = diodeLadderLoaded(output.context) ? new DiodeLadder(recipe.filterBase) : null;
+  const biquads = ladder ? null : new LeanFilter({ type: "lowpass", frequency: recipe.filterBase, Q: recipe.filterQ, rolloff: -24 });
+  const filter = (ladder ?? biquads!).connect(voiceDrive);
+  const sweep = ladder ? ladder.sweep : biquads!.detune;
+  const setResonance = (q: number, time: number) => {
+    if (ladder) ladder.setResonance(q, 0.018, time);
+    else biquads!.Q.rampTo(q, 0.018, time);
+  };
+  let accentSweep: AccentSweep | null = null;
   const filterEnvelope = new FrequencyEnvelope({
     attack: 0.002,
     decay: recipe.filterDecay,
@@ -739,7 +760,7 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: SoundNode, 
     octaves: recipe.filterOctaves,
     exponent: 2.35,
   });
-  filter.modulateFrequency(filterEnvelope);
+  (ladder ?? biquads!).modulateFrequency(filterEnvelope);
   const oscillator = new LeanTone(output.context, { kind: "basic", type: recipe.oscillator }, 110).start(currentTime());
   oscillator.output.connect(filter.input);
   let active = false;
@@ -758,7 +779,13 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: SoundNode, 
       voiceDrive.setCurve(definition.channel.saturationCurve, 0.012, time);
       voiceDrive.setAmount(effects.saturation, 0.012, time);
       drive.setDrive(acidDrive(preset, macros.pressure, accent), 0.012, time);
-      filter.Q.rampTo(effects.q, 0.018, time);
+      setResonance(effects.q, time);
+      if (accent) {
+        accentSweep = chargeAccentSweep(accentSweep, time, recipe.accentSweep, ladderResonance(effects.q));
+        sweep.cancelAndHoldAtTime(time);
+        sweep.setTargetAtTime(accentSweep.peak * 1_200, time, ACCENT_SWEEP_RISE_SECONDS);
+        sweep.setTargetAtTime(0, time + ACCENT_SWEEP_RISE_END, ACCENT_SWEEP_DECAY_SECONDS);
+      }
       // Color is the cutoff knob; the envelope sweeps above it, accents further.
       const cutoff = acidCutoff(preset, macros.color);
       filterEnvelope.baseFrequency = cutoff;
@@ -781,6 +808,11 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: SoundNode, 
       ampEnvelope.triggerRelease(time);
       filterEnvelope.triggerRelease(time);
       active = false;
+      // Stopping drains the accent capacitor.
+      const at = time ?? currentTime();
+      sweep.cancelAndHoldAtTime(at);
+      sweep.setTargetAtTime(0, at, 0.02);
+      accentSweep = null;
     },
     dispose: () => {
       sleep.dispose();
@@ -1099,9 +1131,10 @@ async function renderOfflineFactory(profile: "hard" | "acid" | "hybrid", tempo: 
       const pattern = project.scenes[3]!.tracks.find((entry) => entry.instrument === track)!;
       const preset = project.soundPresets[track];
       strips[track] = createTrackGraph(track, preset, pattern.macros, gains[track], master.input);
-      banks[track] = createVoiceBank(track, preset, strips[track].input);
     }
+    // The voices come after the strips are ready, as in a session (the 303 needs its worklet).
     await Promise.all(TRACK_KINDS.map((track) => strips[track].ready));
+    for (const track of TRACK_KINDS) banks[track] = createVoiceBank(track, project.soundPresets[track], strips[track].input);
     const scene = project.scenes[3]!;
     for (let stepIndex = 0; stepIndex < 16; stepIndex += 1) {
       const time = 0.08 + stepIndex * beat / 4;

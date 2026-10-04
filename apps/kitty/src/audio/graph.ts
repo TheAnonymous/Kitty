@@ -1,4 +1,5 @@
 import { Compressor, Delay, Gain, LeanEq3, LeanFilter, LeanStereoWidener, Limiter, Panner, SoundNode, toSeconds, WaveShaper } from "klangwerk/tone";
+import { loadDiodeLadder } from "./ladder";
 import { PerformanceFilter } from "./performance";
 import { presetDefinition, safeEffectParameters, type SaturationCurve } from "../domain/sound-presets";
 import type { SoundPresetId, TrackKind, TrackMacros } from "../domain/types";
@@ -266,9 +267,14 @@ export function createTrackGraph(
     reverbSend, reverb, reverbHighpass, reverbLowpass, duck, gain,
   ];
   if (widener) nodes.push(sum, widener);
-  const graph = { baseVolume: volume, outputTrimGain: dbToGain(channel.outputTrimDb), input, highpass, eq, filter, saturator, compressor, delaySend, delay, delayHighpass, delayLowpass, reverbSend, reverb, reverbHighpass, reverbLowpass, widener, duck, gain, ready: Promise.resolve(), nodes };
+  const graph = { baseVolume: volume, outputTrimGain: dbToGain(channel.outputTrimDb), input, highpass, eq, filter, saturator, compressor, delaySend, delay, delayHighpass, delayLowpass, reverbSend, reverb, reverbHighpass, reverbLowpass, widener, duck, gain, ready: prepareVoices(track, input.context), nodes };
   applyTrackGraphParameters(graph, track, preset, macros, 0.001);
   return graph;
+}
+
+/** What a track's voices need before they are built: the 303 its diode ladder worklet (without it, it keeps its biquads). */
+function prepareVoices(track: TrackKind, context: BaseAudioContext): Promise<void> {
+  return track === "acid" ? loadDiodeLadder(context).then(() => undefined) : Promise.resolve();
 }
 
 export function applyTrackGraphParameters(
