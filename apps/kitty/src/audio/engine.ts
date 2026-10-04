@@ -6,7 +6,7 @@ import {
 } from "klangwerk/tone";
 import { createFactoryProject } from "../domain/defaults";
 import { scaleChord, scaleDegreeMidi } from "../domain/music";
-import { acidStepParameters, presetDefinition, safeEffectParameters } from "../domain/sound-presets";
+import { acidCutoff, acidEnvelopeOctaves, acidStepParameters, presetDefinition, safeEffectParameters } from "../domain/sound-presets";
 import { allowsRatchet, loopPosition, sceneSteps, stepChance, stepRatchet } from "../domain/patterns";
 import type { DrumVoice, ProjectV1, SoundPresetId, SoundPresetMap, Step, TrackKind, TrackMacros, TrackPattern } from "../domain/types";
 import { SOUND_PRESETS, TRACK_KINDS } from "../domain/types";
@@ -16,6 +16,8 @@ import {
   dbMeterValue,
   duckEnvelope,
   faderGain,
+  kickFrequency,
+  membraneOctaves,
   performanceOffsetSeconds,
   positionalVelocity,
   riserDurationSeconds,
@@ -31,6 +33,7 @@ import {
   setTrackGraphVolume,
   type TrackGraph,
 } from "./graph";
+import { MetalNoise } from "./metal";
 import { BarQueuedTransport, type SequencerPosition } from "./transport";
 import type { PerformanceFilter } from "./performance";
 
@@ -485,7 +488,8 @@ export class ToneAudioEngine {
       legato: legato.legato,
       continuesLegato: legato.continues,
     };
-    const notes = track === "drums" ? []
+    // The kit hears the key's root: the kick tunes itself to it.
+    const notes = track === "drums" ? [scaleDegreeMidi(this.project.root, this.project.scale, 0, 1)]
       : track === "stab" ? stabVoicing(preset as SoundPresetMap["stab"], scaleChord(this.project.root, this.project.scale, step.degree, step.octave))
         : [scaleDegreeMidi(this.project.root, this.project.scale, step.degree, step.octave)];
     const triggerTime = time + (track === "drums" ? 0 : performanceOffsetSeconds(track));
@@ -582,16 +586,20 @@ export class ToneAudioEngine {
   private emitStatus(status: AudioStatusEvent["status"], message: string): void { for (const listener of this.statusListeners) listener({ status, message }); }
 }
 
+/** How much of the kit's noise the hats get on top of their metal. */
+const HAT_NOISE_LEVEL = 0.35;
+
 function createDrumBank(preset: SoundPresetMap["drums"], destination: SoundNode, alwaysAwake: boolean): VoiceBank {
   const definition = presetDefinition("drums", preset);
   const recipe = definition.synthesis;
   const output = new Gain(definition.level);
   const sleep = new SleepyOutput(output, destination, alwaysAwake);
   const snareFilter = new LeanFilter({ type: "highpass", frequency: recipe.snare.highpass, rolloff: -12 });
-  const panScale = preset === "steel" ? 2.15 : preset === "rumble" ? 0.42 : 1;
+  const panScale = preset === "steel" ? 1.7 : preset === "rumble" ? 0.42 : 1;
   const snarePan = new Panner(-0.08 * panScale).connect(output);
   snareFilter.connect(snarePan);
-  const clapFilter = new LeanFilter({ type: "highpass", frequency: recipe.clap.highpass, rolloff: -24 });
+  // A 909 clap is band-passed noise around a kilohertz.
+  const clapFilter = new LeanFilter({ type: "bandpass", frequency: Math.max(900, recipe.clap.highpass * 2.2), Q: 0.8, rolloff: -24 });
   const clapPan = new Panner(0.17 * panScale).connect(output);
   clapFilter.connect(clapPan);
   const closedHatFilter = new LeanFilter({ type: "highpass", frequency: recipe.hats.closedHighpass, rolloff: -24 });
@@ -603,17 +611,17 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: SoundNode,
   const tomFilter = new LeanFilter({ type: "lowpass", frequency: recipe.tom.lowpass, rolloff: -12 });
   const tomPan = new Panner(-0.12 * panScale).connect(output);
   tomFilter.connect(tomPan);
-  // Tone.MembraneSynth: exponential attack, pitch falling from f·2^octaves to f.
+  // Tone.MembraneSynth: exponential attack, pitch falling from f·octaves to f.
   const kick = new OneShotTone({ kind: "basic", type: recipe.kick.oscillator as BasicWave }, {
-    pitch: { octaves: recipe.kick.octaves, pitchDecay: recipe.kick.pitchDecay },
+    pitch: { octaves: membraneOctaves(recipe.kick.octaves), pitchDecay: recipe.kick.pitchDecay },
     envelope: { ...definition.envelope, sustain: 0.01, attackCurve: "exponential" },
   }).connect(output);
   const snareBody = new OneShotTone({ kind: "basic", type: "triangle" }, {
-    pitch: { octaves: 2.6, pitchDecay: 0.022 },
+    pitch: { octaves: membraneOctaves(2.6), pitchDecay: 0.022 },
     envelope: { attack: 0.001, decay: recipe.snare.bodyDecay, sustain: 0, release: 0.09, attackCurve: "exponential" },
   }).connect(snareFilter);
   const tom = new OneShotTone({ kind: "basic", type: "triangle" }, {
-    pitch: { octaves: 2.4, pitchDecay: 0.032 },
+    pitch: { octaves: membraneOctaves(2.4), pitchDecay: 0.032 },
     envelope: { attack: 0.001, decay: recipe.tom.decay, sustain: 0, release: 0.13, attackCurve: "exponential" },
   }).connect(tomFilter);
   // One shared synthetic noise source feeds independent envelopes. This keeps
@@ -622,18 +630,27 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: SoundNode,
   const drumNoise = new Noise(recipe.snare.noise).start();
   const snareNoise = new LeanEnvelope({ attack: 0.001, decay: recipe.snare.decay, sustain: 0, release: 0.07 }).connect(snareFilter);
   const clapNoises = Array.from({ length: 3 }, () => new LeanEnvelope({ attack: 0.001, decay: recipe.clap.decay, sustain: 0, release: 0.04 }).connect(clapFilter));
+  // After the three hand claps, the room: a longer, softer burst.
+  const clapTail = new LeanEnvelope({ attack: 0.002, decay: recipe.clap.decay * 3.2, sustain: 0, release: 0.08 }).connect(clapFilter);
   const closedHat = new LeanEnvelope({ attack: 0.001, decay: recipe.hats.closedDecay, sustain: 0, release: Math.max(0.025, recipe.hats.closedDecay * 0.45) }).connect(closedHatFilter);
   const openHat = new LeanEnvelope({ attack: 0.001, decay: recipe.hats.openDecay, sustain: 0, release: Math.max(0.025, recipe.hats.openDecay * 0.45) }).connect(openHatFilter);
-  drumNoise.fan(snareNoise, ...clapNoises, closedHat, openHat);
+  // Hats: the 808/909 metal of six square waves, with a breath of the kit's noise for the sizzle.
+  const metal = new MetalNoise(recipe.hats.frequency).start();
+  metal.fan(closedHat, openHat);
+  const hatNoise = new Gain(HAT_NOISE_LEVEL);
+  hatNoise.fan(closedHat, openHat);
+  drumNoise.fan(snareNoise, ...clapNoises, clapTail, hatNoise);
   const triggerHat = (hat: LeanEnvelope, noteLength: number | string, time: number, velocity: number) => {
     hat.triggerAttackRelease(toSeconds(noteLength), time, velocity);
   };
-  const transient = recipe.kick.transient > 0
-    ? new LeanEnvelope({ attack: 0.0005, decay: 0.018, sustain: 0, release: 0.012 }).connect(output)
+  // The click: a few milliseconds of noise above the body, where small speakers hear the kick.
+  const transientFilter = recipe.kick.transient > 0 ? new LeanFilter({ type: "highpass", frequency: 1_100, rolloff: -12 }).connect(output) : null;
+  const transient = transientFilter
+    ? new LeanEnvelope({ attack: 0.0005, decay: 0.014, sustain: 0, release: 0.01 }).connect(transientFilter)
     : null;
   if (transient) drumNoise.connect(transient);
   const subHighpass = recipe.kick.subTail
-    ? new LeanFilter({ type: "highpass", frequency: 40, rolloff: -24 })
+    ? new LeanFilter({ type: "highpass", frequency: 30, rolloff: -24 })
     : null;
   const subFilter = recipe.kick.subTail && subHighpass
     ? new LeanFilter({ type: "lowpass", frequency: recipe.kick.subTail.cutoff, rolloff: -24 })
@@ -647,42 +664,45 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: SoundNode,
   }
   const subTail = recipe.kick.subTail && subHighpass
     ? new OneShotTone({ kind: "basic", type: "triangle" }, {
-        pitch: { octaves: 1.6, pitchDecay: 0.018 },
+        pitch: { octaves: membraneOctaves(1.6), pitchDecay: 0.018 },
         envelope: { attack: 0.003, decay: recipe.kick.subTail.decay, sustain: 0, release: recipe.kick.subTail.release, attackCurve: "exponential" },
       }).connect(subHighpass)
     : null;
-  const nodes: SoundNode[] = [kick, snareBody, tom, drumNoise, snareNoise, ...clapNoises, closedHat, openHat, snareFilter, snarePan, clapFilter, clapPan, closedHatFilter, closedHatPan, openHatFilter, openHatPan, tomFilter, tomPan, output];
-  if (transient) nodes.push(transient);
+  const nodes: SoundNode[] = [kick, snareBody, tom, drumNoise, snareNoise, ...clapNoises, clapTail, metal, hatNoise, closedHat, openHat, snareFilter, snarePan, clapFilter, clapPan, closedHatFilter, closedHatPan, openHatFilter, openHatPan, tomFilter, tomPan, output];
+  if (transient && transientFilter) nodes.push(transient, transientFilter);
   if (subHighpass && subFilter && subSaturator && subTail) nodes.push(subTail, subHighpass, subFilter, subSaturator);
-  const trigger = (voice: DrumVoice, step: Step, time: number, velocity: number) => {
+  const trigger = (voice: DrumVoice, step: Step, time: number, velocity: number, root: number | undefined) => {
     const voiceTime = time + performanceOffsetSeconds("drums", voice);
     if (voice === "kick") {
-      kick.triggerAttackRelease(hertz(recipe.kick.note), seconds(step.length === "long" ? "8n" : "16n"), voiceTime, velocity * recipe.kick.velocity);
+      const kickHz = kickFrequency(root, hertz(recipe.kick.note));
+      kick.triggerAttackRelease(kickHz, seconds(step.length === "long" ? "8n" : "16n"), voiceTime, velocity * recipe.kick.velocity);
       transient?.triggerAttackRelease(0.018, voiceTime, velocity * recipe.kick.transient);
-      if (subTail && recipe.kick.subTail) subTail.triggerAttackRelease(hertz(recipe.kick.subTail.note), recipe.kick.subTail.decay, voiceTime + 0.018, velocity * recipe.kick.subTail.level);
+      // The rumble rings on the kick's own note, so it stays in tune with the bass.
+      if (subTail && recipe.kick.subTail) subTail.triggerAttackRelease(kickHz, recipe.kick.subTail.decay, voiceTime + 0.018, velocity * recipe.kick.subTail.level);
     } else if (voice === "snare") {
       snareNoise.triggerAttackRelease(recipe.snare.decay, voiceTime, velocity * recipe.snare.noiseLevel);
       snareBody.triggerAttackRelease(hertz(recipe.snare.bodyNote), seconds("32n"), voiceTime, velocity * recipe.snare.bodyLevel);
     } else if (voice === "clap") {
       [0, recipe.clap.spacing, recipe.clap.spacing * 2].forEach((offset, index) => clapNoises[index]!.triggerAttackRelease(recipe.clap.decay, voiceTime + offset, velocity * recipe.clap.level * (1 - index * 0.14)));
+      clapTail.triggerAttackRelease(recipe.clap.decay * 3.2, voiceTime + recipe.clap.spacing * 3, velocity * recipe.clap.level * 0.6);
     } else if (voice === "closedHat") triggerHat(closedHat, "32n", voiceTime, velocity * recipe.hats.level);
     else if (voice === "openHat") triggerHat(openHat, "8n", voiceTime, velocity * recipe.hats.level * 0.82);
     else tom.triggerAttackRelease(hertz(recipe.tom.note), seconds("8n"), voiceTime, velocity * recipe.tom.level);
   };
   return {
-    trigger: (_notes, step, time, velocity) => {
+    trigger: (notes, step, time, velocity) => {
       sleep.wake(time, time + DRUM_TAIL_SECONDS);
       const layerGain = 1 / Math.sqrt(Math.max(1, step.drumVoices.length));
       step.drumVoices.forEach((voice) => {
         try {
-          trigger(voice, step, time, velocity * layerGain);
+          trigger(voice, step, time, velocity * layerGain, notes[0]);
         } catch (error) {
           throw new Error(`${voice}: ${error instanceof Error ? error.message : String(error)}`);
         }
       });
     },
     release: (time) => {
-      [kick, snareBody, tom, snareNoise, ...clapNoises, transient, subTail].forEach((voice) => voice?.triggerRelease(time));
+      [kick, snareBody, tom, snareNoise, ...clapNoises, clapTail, transient, subTail].forEach((voice) => voice?.triggerRelease(time));
       closedHat.triggerRelease(time);
       openHat.triggerRelease(time);
     },
@@ -727,8 +747,10 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: SoundNode, 
       voiceDrive.setCurve(definition.channel.saturationCurve, 0.012, time);
       voiceDrive.setAmount(effects.saturation, 0.012, time);
       filter.Q.rampTo(effects.q, 0.018, time);
-      filterEnvelope.baseFrequency = Math.max(recipe.filterBase * 0.7, Math.min(recipe.filterBase * 2.15, effects.cutoff * 0.12));
-      filterEnvelope.octaves = recipe.filterOctaves * performance.filterBoost;
+      // Color is the cutoff knob; the envelope sweeps above it, accents further.
+      const cutoff = acidCutoff(preset, macros.color);
+      filterEnvelope.baseFrequency = cutoff;
+      filterEnvelope.octaves = acidEnvelopeOctaves(preset, cutoff, performance.filterBoost);
       filterEnvelope.decay = recipe.filterDecay * performance.decayMultiplier;
       if (!context.legato || !active) {
         const noteVelocity = clamp01(velocity * performance.velocityMultiplier);

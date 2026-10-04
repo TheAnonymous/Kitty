@@ -174,3 +174,35 @@ function finite(value: number, fallback: number): number {
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
+
+/**
+ * Tone's MembraneSynth starts a note at `note × octaves` and falls to the note;
+ * Klangwerk's OneShotTone starts at `note × 2^octaves`. Kitty's recipes keep
+ * Tone's meaning, so they pass through here.
+ */
+export function membraneOctaves(multiplier: number): number {
+  return Math.log2(Math.max(1, multiplier));
+}
+
+/**
+ * A kick tuned to the key: the root or its fifth, in whichever octave lies
+ * nearest the preset's centre, so the kick sits with the bass instead of
+ * under it. Without a key it plays the centre itself.
+ */
+export function kickFrequency(rootMidi: number | undefined, centerHz: number): number {
+  if (rootMidi === undefined || !Number.isFinite(rootMidi)) return centerHz;
+  const pitchClass = ((Math.round(rootMidi) % 12) + 12) % 12;
+  let best = centerHz;
+  let distance = Number.POSITIVE_INFINITY;
+  for (const pitch of [pitchClass, (pitchClass + 7) % 12]) {
+    for (let octave = 0; octave <= 3; octave += 1) {
+      const hertz = 440 * 2 ** ((12 + octave * 12 + pitch - 69) / 12);
+      const away = Math.abs(Math.log2(hertz / centerHz));
+      if (away < distance) {
+        distance = away;
+        best = hertz;
+      }
+    }
+  }
+  return best;
+}
