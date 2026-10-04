@@ -25,6 +25,7 @@ import { Tour, type TourStep } from "./tour";
 import { PlaybackWakeLock } from "./wake-lock";
 import { versionLabel } from "./version";
 import StepGrid from "./components/StepGrid.vue";
+import { ARC_LABELS, ARC_LENGTHS, AUTOPILOT_PHASES, Autopilot, PHASE_LABELS, arcBars, type ArcLength, type AutopilotPlan, type AutopilotView } from "./autopilot";
 import UnitSlider from "./components/UnitSlider.vue";
 import { vHint } from "./hint";
 import { DRUM_LABELS, DRUM_SHORT, percentLabel } from "./labels";
@@ -79,6 +80,7 @@ const MACRO_HINTS: Record<TrackKind, Record<MacroKind, string>> = {
 
 const TOUR_STEPS: readonly TourStep[] = [
   { target: ".start-button", title: "Start und Stop", text: "Mit Start oder der Leertaste läuft das Werksprojekt sofort. Alle Klänge entstehen live im Browser." },
+  { target: ".auto-bar", title: "Auto-Acid", text: "Ein Klick, und Kitty spielt endlos Acid Techno: baut Spannung auf, bricht ein, droppt und fängt neu an. Du kannst jederzeit eingreifen." },
   { target: ".scene-strip", title: "Vier Szenen", text: "Aufwärmen, Druck, Break und Peak. Eine gewählte Szene übernimmt am nächsten Takt, der Groove reißt nicht ab." },
   { target: ".sequencer-panel", title: "Spuren und Steps", text: "Links wählst du eine der fünf Spuren, im Raster setzt du Steps; ein zweiter Klick schaltet sie wieder aus. V baut eine Variation, R ein typisches Pattern; ein Schloss schützt einen Takt." },
   { target: ".arrangement", title: "Vom Loop zum Track", text: "Die Szenenfolge spielt alle Szenen nacheinander. Exportiere das Ergebnis als WAV oder teile es als Link. Mit ? findest du Tastenkürzel und diese Tour wieder." },
@@ -170,6 +172,15 @@ const midi = new MidiLink("kitty.midi.v1", {
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let audioDisposed = false;
 const PREVIEW_KEY = "kitty.preview.v1";
+const AUTOPILOT_KEY = "kitty.autopilot.v1";
+/** The autopilot changes the music every beat; it is saved this often instead of after each change. */
+const AUTOPILOT_SAVE_MS = 4_000;
+const autopilot = new Autopilot({ arcLength: readArcLength() });
+const autopilotOn = ref(false);
+const autopilotView = shallowRef<AutopilotView | null>(null);
+const arcLength = ref<ArcLength>(autopilot.arcLength);
+/** A hand on the filter fader: the autopilot keeps off the filter meanwhile. */
+let filterHeld = false;
 const FULL_UI_KEY = "kitty.full-ui.v1";
 const stepGrid = ref<InstanceType<typeof StepGrid> | null>(null);
 /** Plays a step once when it is set or changed while the music is stopped. */
@@ -231,6 +242,10 @@ const unsubscribe = store.subscribe((next, action) => {
   }
   if (next.autosave !== "saving") return;
   engine.syncProject(next.project);
+  if (action.type.startsWith("auto/")) {
+    saveTimer ??= setTimeout(() => save(), AUTOPILOT_SAVE_MS);
+    return;
+  }
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => save(), action.type.startsWith("history/") ? 80 : 260);
 });
@@ -238,8 +253,8 @@ const unsubscribe = store.subscribe((next, action) => {
 const offStatus = engine.onStatus((event) => store.dispatch({ type: "transport/update", update: { status: event.status, message: event.message } }));
 const offPlayhead = engine.onPlayhead((event) => {
   const current = store.getState();
-  // With the scene chain on, the editor follows the music when it was showing the running scene.
-  if (event.switched && current.ui.sceneChain && current.ui.selectedScene === current.transport.runningScene) {
+  // With the scene chain or the autopilot on, the editor follows the music when it was showing the running scene.
+  if (event.switched && (current.ui.sceneChain || autopilotOn.value) && current.ui.selectedScene === current.transport.runningScene) {
     store.dispatch({ type: "ui/select-scene", scene: event.scene });
   }
   const chain = current.ui.sceneChain && event.step === 0 ? chainMessage(event.scene, event.pass, event.chainNext) : null;
@@ -257,6 +272,12 @@ const offPlayhead = engine.onPlayhead((event) => {
 
 const offPerformance = engine.onPerformance((next) => { liveState.value = next; });
 
+const offAutopilot = engine.onPlayhead((event) => {
+  if (!autopilotOn.value) return;
+  applyAutopilotPlan(autopilot.step(event.step, store.getState().project));
+  autopilotView.value = autopilot.view(event.step);
+});
+
 const offTriggered = engine.onPlayhead((event) => {
   triggeredTracks.value = [...new Set([...triggeredTracks.value, ...event.triggeredTracks])];
   ducking.value ||= event.ducking;
@@ -267,6 +288,7 @@ const offTriggered = engine.onPlayhead((event) => {
 function dispatch(action: Action, mergeKey?: string): void { store.dispatch(action, mergeKey === undefined ? {} : { mergeKey }); }
 
 function save(): void {
+  saveTimer = undefined;
   try {
     projects.value = repository.saveActive(active.value, store.getState().project, projects.value);
     active.value = projects.value.find((entry) => entry.id === active.value.id) ?? active.value;
@@ -371,6 +393,7 @@ function selectScene(scene: number): void {
 
 function flushAutosave(): void {
   clearTimeout(saveTimer);
+  saveTimer = undefined;
   if (store.getState().autosave === "saving") save();
 }
 
@@ -445,6 +468,90 @@ function startTour(): void {
 }
 
 watch(isPlaying, (playing) => { wakeLock.playing = playing; });
+watch(isPlaying, (playing) => { if (!playing) stopAutopilot(); });
+
+const tensionPercent = computed(() => Math.round((autopilotView.value?.tension ?? 0) * 100));
+const tensionText = computed(() => {
+  const view = autopilotView.value;
+  if (!view) return "Auto-Acid ist aus";
+  return `${tensionPercent.value} %, ${view.rising ? "steigt" : "fällt"} · ${PHASE_LABELS[view.phase]}, Takt ${view.bar} von ${view.bars}`;
+});
+
+function readArcLength(): ArcLength {
+  const stored = readPreference(AUTOPILOT_KEY);
+  return (ARC_LENGTHS as readonly string[]).includes(stored ?? "") ? stored as ArcLength : "medium";
+}
+
+function setArcLength(length: ArcLength): void {
+  arcLength.value = length;
+  autopilot.arcLength = length;
+  writePreference(AUTOPILOT_KEY, length);
+}
+
+function arcHint(length: ArcLength): string {
+  const bars = arcBars(length);
+  return `${ARC_LABELS[length]}: ein Spannungsbogen dauert ${bars} Takte, bei ${state.value.project.tempo} BPM etwa ${formatDuration((bars * 4 * 60) / state.value.project.tempo)}`;
+}
+
+async function toggleAutopilot(): Promise<void> {
+  if (autopilotOn.value) { stopAutopilot(); return; }
+  const fromSilence = !isPlaying.value;
+  // The autopilot chooses the scenes itself.
+  if (state.value.ui.sceneChain) dispatch({ type: "ui/scene-chain", value: false });
+  store.armCheckpoint();
+  autopilotOn.value = true;
+  const plan = autopilot.start(fromSilence, store.getState().project);
+  autopilotView.value = autopilot.view();
+  if (fromSilence) dispatch({ type: "ui/select-scene", scene: plan.scene ?? 0 });
+  applyAutopilotPlan(plan, !fromSilence);
+  if (!fromSilence) return;
+  await startPlayback();
+  if (!isPlaying.value) stopAutopilot(false);
+}
+
+/** Carries out what the autopilot decided for this moment. */
+function applyAutopilotPlan(plan: AutopilotPlan, queueScene = true): void {
+  for (const action of plan.actions) store.dispatch(action);
+  if (plan.scene !== undefined && queueScene && isPlaying.value) {
+    dispatch({ type: "transport/update", update: { queuedScene: engine.queueScene(plan.scene) } });
+  }
+  for (const [track, muted] of Object.entries(plan.mutes ?? {}) as [TrackKind, boolean][]) engine.setPerformanceMute(track, muted);
+  if (plan.breakOn) engine.setBreak(true);
+  if (plan.drop) releaseBreak();
+  if (plan.filter !== undefined) autoFilter(plan.filter);
+  if (plan.message) dispatch({ type: "transport/update", update: { message: plan.message } });
+}
+
+function stopAutopilot(announce = true): void {
+  if (!autopilotOn.value) return;
+  autopilotOn.value = false;
+  const muted = autopilot.mutedTracks;
+  const changed = !store.checkpointPending;
+  autopilot.stop();
+  store.disarmCheckpoint();
+  autopilotView.value = null;
+  // The music goes back into your hands with every track audible and the filter open.
+  for (const track of muted) engine.setPerformanceMute(track, false);
+  releaseBreak();
+  autoFilter(0);
+  if (!announce) return;
+  const description = !changed ? "Alles bleibt, wie es war." : store.getState().canUndo ? "Rückgängig (Strg+Z) führt zur Musik von vor dem Auto-Modus zurück." : "Die Musik bleibt, wie Auto-Acid sie hinterlassen hat.";
+  toast.toast({ title: "Auto-Acid aus", description, status: "info" });
+}
+
+/** The autopilot's master filter, unless a hand is on it (F held, fader dragged or springing back). */
+function autoFilter(value: number): void {
+  if (filterHeld || filterTarget !== 0 || filterFrame !== null) return;
+  filterValue.value = value;
+  engine.setPerformanceFilter(value);
+}
+
+function onFilterPointerDown(): void { filterHeld = true; }
+
+function onFilterPointerUp(): void {
+  filterHeld = false;
+  glideFilter(0, 0.18);
+}
 watch(midiDialog, (open) => { if (!open && midi.learningIndex !== null) learnMacro(midi.learningIndex); });
 
 function toggleChain(): void {
@@ -894,7 +1001,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearTimeout(saveTimer);
-  unsubscribe(); offStatus(); offPlayhead(); offTriggered(); offPerformance(); disposeAudio();
+  unsubscribe(); offStatus(); offPlayhead(); offTriggered(); offPerformance(); offAutopilot(); disposeAudio();
   clearInterval(recordingTimer);
   cancelFilterGlide();
   window.removeEventListener("keydown", onShortcut);
@@ -951,7 +1058,7 @@ onBeforeUnmount(() => {
         <span class="project-name">{{ active.name }}</span>
         <KvBadge status="info">{{ PROFILE_DEFINITIONS[state.project.profile].label }}</KvBadge>
         <span class="save-state" data-save-status>
-          {{ state.autosave === "saving" ? "speichert …" : state.autosave === "saved" ? "gespeichert" : state.autosave === "error" ? "Speicherfehler" : "lokal" }}
+          {{ state.autosave === "saving" ? (autopilotOn ? "sichert laufend" : "speichert …") : state.autosave === "saved" ? "gespeichert" : state.autosave === "error" ? "Speicherfehler" : "lokal" }}
         </span>
         <KvButton variant="secondary" size="sm" @click="projectsDialog = true">Projekte</KvButton>
         <KvButton v-hint="projectsFull ? `Alle ${MAX_PROJECTS} Plätze belegt – unter Projekte kannst du eines löschen` : 'Neues Projekt aus einem Werkprofil anlegen'" size="sm" @click="openNewDialog">Neu</KvButton>
@@ -991,6 +1098,31 @@ onBeforeUnmount(() => {
           <KvButton v-hint="'Rückgängig (Strg+Z)'" class="history-button" variant="ghost" size="sm" aria-label="Rückgängig" :disabled="!state.canUndo" @click="dispatch({ type: 'history/undo' })"><span aria-hidden="true">↶</span></KvButton>
           <KvButton v-hint="'Wiederholen (Strg+Umschalt+Z)'" class="history-button" variant="ghost" size="sm" aria-label="Wiederholen" :disabled="!state.canRedo" @click="dispatch({ type: 'history/redo' })"><span aria-hidden="true">↷</span></KvButton>
         </div>
+      </section>
+
+      <section class="auto-bar" aria-labelledby="auto-heading" :data-active="autopilotOn ? '' : undefined">
+        <h2 id="auto-heading" class="kv-visually-hidden">Auto-Acid</h2>
+        <button
+          v-hint="'Spielt endlos Acid Techno und regelt alles selbst: Szenen, Filter und Resonanz der 303, Variationen, Riser, Break und Drop – in Spannungsbögen. Du kannst jederzeit eingreifen; Rückgängig holt danach die Musik von vorher zurück.'"
+          type="button"
+          class="auto-toggle"
+          role="switch"
+          :aria-checked="autopilotOn"
+          data-autopilot
+          @click="toggleAutopilot"
+        ><i aria-hidden="true" />AUTO-ACID {{ autopilotOn ? "AN" : "AUS" }}</button>
+        <div class="repeat-group" role="group" aria-label="Länge eines Spannungsbogens">
+          <button v-for="length in ARC_LENGTHS" :key="length" v-hint="arcHint(length)" type="button" class="repeat-button" :aria-pressed="arcLength === length" @click="setArcLength(length)">{{ ARC_LABELS[length].toUpperCase() }}</button>
+        </div>
+        <ol class="auto-phases" aria-label="Phasen eines Spannungsbogens">
+          <li v-for="phase in AUTOPILOT_PHASES" :key="phase" :data-phase="phase" :aria-current="autopilotView?.phase === phase ? 'step' : undefined">{{ PHASE_LABELS[phase] }}</li>
+        </ol>
+        <div class="auto-tension">
+          <span id="tension-label">SPANNUNG</span>
+          <div class="tension-meter" role="meter" aria-labelledby="tension-label" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="tensionPercent" :aria-valuetext="tensionText"><i :style="{ width: `${tensionPercent}%` }" /></div>
+          <output aria-hidden="true">{{ autopilotView ? `${tensionPercent} %` : "–" }}</output>
+        </div>
+        <span v-if="autopilotView" class="auto-progress" data-autopilot-progress>TAKT {{ autopilotView.bar }}/{{ autopilotView.bars }} · BOGEN {{ autopilotView.arc }}</span>
       </section>
 
       <section class="scene-strip" aria-labelledby="scenes-heading">
@@ -1047,7 +1179,7 @@ onBeforeUnmount(() => {
         </div>
         <label v-hint="'F halten: Tiefpass · Umschalt+F halten: Hochpass · federt beim Loslassen zurück'" class="live-filter">
           <span>FILTER</span>
-          <input type="range" min="-100" max="100" step="1" :value="Math.round(filterValue * 100)" data-perf-filter aria-label="Filter, links Tiefpass, rechts Hochpass" :aria-valuetext="filterText" @input="onFilterInput" @pointerup="glideFilter(0, 0.18)" @keyup="glideFilter(0, 0.18)">
+          <input type="range" min="-100" max="100" step="1" :value="Math.round(filterValue * 100)" data-perf-filter aria-label="Filter, links Tiefpass, rechts Hochpass" :aria-valuetext="filterText" @input="onFilterInput" @pointerdown="onFilterPointerDown" @pointerup="onFilterPointerUp" @pointercancel="onFilterPointerUp" @keyup="glideFilter(0, 0.18)">
         </label>
         <button
           v-hint="'Halten: Kick und Acid raus, der Hochpass steigt; loslassen bringt den Drop am nächsten Takt. Kurz tippen rastet den Break ein, nochmal tippen bringt den Drop (B)'"
