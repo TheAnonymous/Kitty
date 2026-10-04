@@ -552,7 +552,7 @@ test("schaltet einen Step mit dem zweiten Klick und mit Entf aus und spielt ihn 
 
 test("zeigt in Drum-Steps die Stimmen und in Melodiespuren die Tonstufe", async ({ page }) => {
   const kickAndHat = page.locator('.kitty-step[data-bar="0"][data-step="0"]');
-  await expect(kickAndHat).toHaveText(/^[KSCHOT]{1,2}$/);
+  await expect(kickAndHat).toHaveText(/^[KSCHOTR]{1,2}$/);
   await expect(kickAndHat).toHaveAttribute("aria-label", /Takt 1, Step 1, Kick/);
   await expect(page.locator("[data-grid-legend]")).toContainText("K Kick");
   await page.locator("body").press("2");

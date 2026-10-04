@@ -72,3 +72,65 @@ describe("deterministischer Pattern-Generator", () => {
     expect(sanitizeDrumVoices([])).toEqual(["kick"]);
   });
 });
+
+describe("Acid-Idiom", () => {
+  const acidLine = (profile: "hard" | "acid" | "hybrid", role: "warmup" | "drive" | "break" | "peak", seed: number) => generateTypicalPattern("acid", profile, role, seed);
+
+  it("spielt 303-Linien dicht, grundtonlastig, mit Oktavsprüngen, Akzenten und Slides", () => {
+    for (let seed = 1; seed <= 40; seed += 1) {
+      const bars = acidLine("acid", "drive", seed);
+      const notes = bars.flatMap((bar) => bar.steps.filter((step) => step.enabled));
+      expect(notes.length / 4).toBeGreaterThanOrEqual(10);
+      // The root leads clearly: more often than any other degree, and at least a third of the line.
+      const counts = Array.from({ length: 7 }, (_, degree) => notes.filter((note) => note.degree === degree).length);
+      expect(counts[0]!).toBeGreaterThan(Math.max(...counts.slice(1)));
+      expect(counts[0]! / notes.length).toBeGreaterThanOrEqual(0.33);
+      expect(new Set(notes.map((note) => note.octave))).toEqual(new Set([2, 3]));
+      const accents = bars[0]!.steps.filter((step) => step.enabled && step.dynamics === "accent").length;
+      expect(accents).toBeGreaterThanOrEqual(2);
+      // A slide always glides in from a note.
+      for (const bar of bars) bar.steps.forEach((step, index) => { if (step.enabled && step.slide) expect(bar.steps[index - 1]?.enabled).toBe(true); });
+    }
+  });
+
+  it("wiederholt ein Motiv und antwortet am Ende der Phrase", () => {
+    for (let seed = 1; seed <= 40; seed += 1) {
+      const bars = acidLine("hybrid", "drive", seed);
+      // The third bar repeats the first; the last bar answers it.
+      expect(bars[2]).toEqual(bars[0]);
+      expect(bars[3]).not.toEqual(bars[2]);
+      // The answer keeps the downbeat.
+      expect(bars[3]!.steps[0]).toEqual(bars[0]!.steps[0]);
+    }
+  });
+
+  it("lässt den Break dünner als den Peak", () => {
+    const count = (role: "break" | "peak") => acidLine("acid", role, 7).flatMap((bar) => bar.steps.filter((step) => step.enabled)).length;
+    expect(count("break")).toBeLessThan(count("peak"));
+  });
+});
+
+describe("Techno-Groove", () => {
+  const voicesAt = (role: "warmup" | "drive" | "break" | "peak", profile: "hard" | "acid" | "hybrid", seed = 3) => generateTypicalPattern("drums", profile, role, seed);
+
+  it("setzt die offene Hat auf den Offbeat und geschlossene Hats dazwischen", () => {
+    for (const bar of voicesAt("drive", "hybrid").slice(0, 3)) {
+      for (const offbeat of [2, 6, 10]) expect(bar.steps[offbeat]!.drumVoices).toContain("openHat");
+      expect(bar.steps.filter((step) => step.drumVoices.includes("closedHat") && step.enabled).length).toBeGreaterThanOrEqual(2);
+      expect(bar.steps[4]!.drumVoices).toEqual(["kick", "clap"]);
+    }
+  });
+
+  it("lässt im Break die Kick weg, bringt im Peak den Ride und hält das Warm-up offen", () => {
+    for (const bar of voicesAt("break", "acid")) expect(bar.steps.some((step) => step.drumVoices.includes("kick") && step.enabled)).toBe(false);
+    expect(voicesAt("peak", "acid")[0]!.steps[2]!.drumVoices).toEqual(["openHat", "ride"]);
+    expect(voicesAt("peak", "hard")[0]!.steps.some((step) => step.drumVoices.includes("ride"))).toBe(false);
+    // The first warm-up bar leaves its sixteenths free for the player.
+    expect(voicesAt("warmup", "hybrid")[0]!.steps[1]!.enabled).toBe(false);
+  });
+
+  it("liefert mit Typisch einen anderen Groove", () => {
+    const grooves = new Set(Array.from({ length: 12 }, (_, seed) => JSON.stringify(voicesAt("drive", "acid", seed))));
+    expect(grooves.size).toBeGreaterThan(6);
+  });
+});

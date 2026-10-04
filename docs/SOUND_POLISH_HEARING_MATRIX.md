@@ -22,7 +22,7 @@ Je Preset: bei allen Makros auf Mitte hören, dann jedes Makro einmal langsam vo
 
 | Spur / Preset | geprüft | Worauf achten |
 | --- | --- | --- |
-| Drums — Warehouse | [ ] | 909-Body in der Tonart, Click, Clap mit Raum, metallische Hats |
+| Drums — Warehouse | [ ] | 909-Body in der Tonart, Click, Clap mit Raum, metallische Hats, Ride |
 | Drums — Stahl | [ ] | kurzer höherer Punch, harter Click, helle Hats nicht schneidend |
 | Drums — Rumble | [ ] | trockener Attack, Fahne auf dem Kick-Ton, im Hard-Profil nicht dröhnend |
 | Acid — Silverbox | [ ] | klassisch, Accent, direktes Slide; Farbe von 0 bis 1 wie ein Cutoff-Regler |
@@ -82,9 +82,17 @@ Gemessen mit Renderings derselben Engine, gehört noch nicht:
 - **Mix:** Texture-Presets 6 dB lauter, Standardfader für neue Projekte:
   Texture 0,84, Stab 0,85.
 
+Danach, ebenfalls nur gemessen: **Patterns, Verzerrer und Ride.** Der Generator
+baut 303-Linien als wiederholtes Motiv mit Oktavsprüngen, Akzenten und Slides
+und Drum-Grooves mit offener Offbeat-Hat, Sechzehntel-Hats, Ride im Peak und
+Fills; die 303 läuft hinter ihrer Lautstärkehüllkurve durch einen Verzerrer
+(asymmetrisches Clipping, Ton-Tiefpass, Pegelausgleich), den das Druck-Makro
+hochfährt; der Ride entsteht aus dem Hat-Metall mit Glockenband.
+
 Beim Hören besonders: Passt die Kick-Tonhöhe zum Bass (auch nach einem
 Tonartwechsel von Auto-Acid)? Hats hell, aber nicht scharf? 303 bei Farbe und
-Druck auf 1 nicht schmerzhaft? Rumble im Hard-Profil nicht dröhnend?
+Druck auf 1 nicht schmerzhaft, Verzerrer dreckig statt kratzig? Ride im Peak
+hörbar, aber nicht zischend? Rumble im Hard-Profil nicht dröhnend?
 
 ## Abschluss
 

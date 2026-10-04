@@ -66,6 +66,7 @@ export const DRUM_TIMING_OFFSETS_MS: Record<DrumVoice, number> = {
   closedHat: 3,
   openHat: 6,
   tom: 5,
+  ride: 4,
 };
 
 export const DUCK_ATTACK_SECONDS = 0.004;

@@ -73,6 +73,8 @@ export interface DrumPresetRecipe extends PresetRecipeBase<"drums"> {
     clap: { decay: number; spacing: number; level: number; highpass: number };
     hats: { harmonicity: number; modulationIndex: number; resonance: number; octaves: number; frequency: number; closedDecay: number; openDecay: number; level: number; closedHighpass: number; openHighpass: number };
     tom: { note: string; decay: number; level: number; lowpass: number };
+    /** The 909 ride from the hats' metal: longer, a little lower, with a bell band. */
+    ride: { decay: number; level: number; highpass: number; bell: number };
   };
 }
 
@@ -91,6 +93,8 @@ export interface AcidPresetRecipe extends PresetRecipeBase<"acid"> {
     portamento: number;
     slidePortamento: number;
     accent: { filterBoost: number; saturationBoost: number; velocityBoost: number; decayMultiplier: number };
+    /** The distortion pedal after the 303: drive at pressure 0, how much pressure adds, and its tone low-pass. */
+    drive: { base: number; pressure: number; tone: number };
   };
 }
 
@@ -183,6 +187,7 @@ export const SOUND_SAFETY_LIMITS = {
   feedback: 0.32,
   wet: 0.46,
   saturation: 0.32,
+  drive: 0.85,
 } as const;
 
 const DEFAULT_EFFECTS: EffectRecipe = {
@@ -270,6 +275,7 @@ export const SOUND_PRESET_DEFINITIONS = {
         clap: { decay: 0.048, spacing: 0.012, level: 0.38, highpass: 520 },
         hats: { harmonicity: 5.1, modulationIndex: 25, resonance: 3_500, octaves: 1.35, frequency: 225, closedDecay: 0.065, openDecay: 0.2, level: 0.62, closedHighpass: 6_900, openHighpass: 5_600 },
         tom: { note: "G1", decay: 0.24, level: 0.62, lowpass: 1_900 },
+        ride: { decay: 0.62, level: 0.4, highpass: 3_400, bell: 5_200 },
       },
     },
     {
@@ -284,6 +290,7 @@ export const SOUND_PRESET_DEFINITIONS = {
         clap: { decay: 0.038, spacing: 0.009, level: 0.34, highpass: 760 },
         hats: { harmonicity: 6.4, modulationIndex: 38, resonance: 5_800, octaves: 1.9, frequency: 255, closedDecay: 0.045, openDecay: 0.135, level: 0.5, closedHighpass: 7_200, openHighpass: 6_000 },
         tom: { note: "A1", decay: 0.17, level: 0.54, lowpass: 2_500 },
+        ride: { decay: 0.44, level: 0.38, highpass: 4_200, bell: 6_400 },
       },
     },
     {
@@ -298,6 +305,7 @@ export const SOUND_PRESET_DEFINITIONS = {
         clap: { decay: 0.055, spacing: 0.014, level: 0.31, highpass: 440 },
         hats: { harmonicity: 4.2, modulationIndex: 20, resonance: 2_800, octaves: 1.15, frequency: 205, closedDecay: 0.08, openDecay: 0.24, level: 0.5, closedHighpass: 5_600, openHighpass: 4_600 },
         tom: { note: "F1", decay: 0.3, level: 0.6, lowpass: 1_500 },
+        ride: { decay: 0.78, level: 0.36, highpass: 2_900, bell: 4_600 },
       },
     },
   ],
@@ -308,7 +316,7 @@ export const SOUND_PRESET_DEFINITIONS = {
       level: 0.3, envelope: { attack: 0.003, decay: 0.32, sustain: 0.62, release: 0.085 },
       channel: channel("acid", { saturationCurve: "body", inputTrimDb: -1.8, outputTrimDb: 0.5, eq: { low: 0.4, mid: 0.9, high: -1.1, lowFrequency: 110, highFrequency: 4_500, tiltDb: 1.25 } }),
       effects: effects({ filterBase: 920, filterMin: 0.56, filterMax: 1.72, resonanceBase: 2.1, resonancePressure: 5.4, delaySpace: 0.08, delayMotion: 0.07, reverbSpace: 0.1, saturationBase: 0.07, saturationPressure: 0.17 }),
-      synthesis: { oscillator: "sawtooth", filterBase: 92, cutoffOctaves: 3.9, filterOctaves: 4.8, filterQ: 5.6, filterDecay: 0.22, filterSustain: 0.2, portamento: 0.004, slidePortamento: 0.075, accent: { filterBoost: 1.22, saturationBoost: 0.045, velocityBoost: 1.08, decayMultiplier: 0.82 } },
+      synthesis: { oscillator: "sawtooth", filterBase: 92, cutoffOctaves: 3.9, filterOctaves: 4.8, filterQ: 5.6, filterDecay: 0.22, filterSustain: 0.2, portamento: 0.004, slidePortamento: 0.075, accent: { filterBoost: 1.22, saturationBoost: 0.045, velocityBoost: 1.08, decayMultiplier: 0.82 }, drive: { base: 0.08, pressure: 0.38, tone: 4_800 } },
     },
     {
       id: "venom", kind: "acid", label: "Venom",
@@ -316,7 +324,7 @@ export const SOUND_PRESET_DEFINITIONS = {
       level: 0.24, envelope: { attack: 0.002, decay: 0.16, sustain: 0.34, release: 0.055 },
       channel: channel("acid", { saturationCurve: "bite", inputTrimDb: -2.3, highpass: 36, outputTrimDb: 0.1, compressor: { attack: 0.005, release: 0.075, knee: 4.5 }, eq: { low: -2.1, mid: 1.8, high: 2.8, lowFrequency: 135, highFrequency: 3_900, tiltDb: 1.5 }, delayReturn: { highpass: 1_200, lowpass: 6_800, stereo: false }, reverbReturn: { highpass: 1_200, lowpass: 7_200 } }),
       effects: effects({ filterBase: 1_180, filterMin: 0.625, filterMax: 1.85, resonanceBase: 2.6, resonancePressure: 6.1, delaySpace: 0.28, delayMotion: 0.085, reverbSpace: 0.15, saturationBase: 0.12, saturationPressure: 0.2 }),
-      synthesis: { oscillator: "sawtooth", filterBase: 118, cutoffOctaves: 4.5, filterOctaves: 6.5, filterQ: 7.8, filterDecay: 0.12, filterSustain: 0.12, portamento: 0.003, slidePortamento: 0.055, accent: { filterBoost: 1.34, saturationBoost: 0.06, velocityBoost: 1.1, decayMultiplier: 0.7 } },
+      synthesis: { oscillator: "sawtooth", filterBase: 118, cutoffOctaves: 4.5, filterOctaves: 6.5, filterQ: 7.8, filterDecay: 0.12, filterSustain: 0.12, portamento: 0.003, slidePortamento: 0.055, accent: { filterBoost: 1.34, saturationBoost: 0.06, velocityBoost: 1.1, decayMultiplier: 0.7 }, drive: { base: 0.2, pressure: 0.55, tone: 6_200 } },
     },
     {
       id: "rubber", kind: "acid", label: "Rubber",
@@ -324,7 +332,7 @@ export const SOUND_PRESET_DEFINITIONS = {
       level: 0.33, envelope: { attack: 0.004, decay: 0.36, sustain: 0.7, release: 0.15 },
       channel: channel("acid", { saturationCurve: "density", inputTrimDb: -1.5, highpass: 29, outputTrimDb: 0.8, compressor: { attack: 0.012, release: 0.14, knee: 7 }, eq: { low: 2.1, mid: 0.2, high: -2.1, lowFrequency: 98, highFrequency: 4_200, tiltDb: 1.1 } }),
       effects: effects({ filterBase: 720, filterMin: 0.5, filterMax: 1.58, resonanceBase: 1.7, resonancePressure: 4.7, delaySpace: 0.18, delayMotion: 0.055, reverbSpace: 0.2, saturationBase: 0.05, saturationPressure: 0.14 }),
-      synthesis: { oscillator: "square", filterBase: 72, cutoffOctaves: 3.6, filterOctaves: 4.2, filterQ: 4.7, filterDecay: 0.26, filterSustain: 0.3, portamento: 0.008, slidePortamento: 0.13, accent: { filterBoost: 1.16, saturationBoost: 0.035, velocityBoost: 1.06, decayMultiplier: 0.9 } },
+      synthesis: { oscillator: "square", filterBase: 72, cutoffOctaves: 3.6, filterOctaves: 4.2, filterQ: 4.7, filterDecay: 0.26, filterSustain: 0.3, portamento: 0.008, slidePortamento: 0.13, accent: { filterBoost: 1.16, saturationBoost: 0.035, velocityBoost: 1.06, decayMultiplier: 0.9 }, drive: { base: 0.04, pressure: 0.26, tone: 3_600 } },
     },
   ],
   stab: [
@@ -471,6 +479,12 @@ export const ACID_ENVELOPE_CEILING = 7_500;
 export function acidCutoff(preset: SoundPresetMap["acid"], color: number): number {
   const recipe = presetDefinition("acid", preset).synthesis;
   return recipe.filterBase * 2 ** (recipe.cutoffOctaves * normalized(color));
+}
+
+/** How hard the pedal after the 303 is driven: pressure turns it up, an accent a little more. */
+export function acidDrive(preset: SoundPresetMap["acid"], pressure: number, accent = false): number {
+  const drive = presetDefinition("acid", preset).synthesis.drive;
+  return clamp(drive.base + normalized(pressure) * drive.pressure + (accent ? 0.08 : 0), 0, SOUND_SAFETY_LIMITS.drive);
 }
 
 /** Envelope depth in octaves above `cutoff`, never sweeping past the ceiling. */

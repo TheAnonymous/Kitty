@@ -471,7 +471,7 @@ button { touch-action: manipulation; }
 .step-editor-actions { display: flex; align-items: center; gap: 6px; }
 .step-editor .kv-card__body { padding-top: 5px; }
 .empty-step { margin: 12px 0; color: var(--kv-color-text-muted); font-size: 12px; }
-.drum-voices { display: flex; align-items: center; gap: 5px; }
+.drum-voices { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .voice-button, .slide-button {
   display: inline-flex;
   min-height: 34px;

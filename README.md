@@ -50,7 +50,7 @@ verbindlich ist in jedem Fall `npm run verify`.
 | Drum Machine | Acid Bass | Stab | Rave Lead | Texture / FX |
 | --- | --- | --- | --- | --- |
 | ![Schwarze Drum Machine mit roten Pads und massiven Percussion-Reglern](docs/assets/instruments/kitty-drums.webp) | ![Schwarzer Acid-Synth mit großem Filterregler und gelbgrüner Signallinie](docs/assets/instruments/kitty-acid-bass.webp) | ![Schwarzes Stab-Modul mit drei Gruppen aus metallischen Akkordplatten](docs/assets/instruments/kitty-stab.webp) | ![Schwarzes Rave-Modul mit zentralem Hoover-Regler und rotem Sirenenbogen](docs/assets/instruments/kitty-rave.webp) | ![Schwarzes Texture-Modul mit Noise-Fläche und ansteigenden roten Lichtern](docs/assets/instruments/kitty-texture.webp) |
-| Kick, Snare, Clap, Hats und Tom | Monophone Saw-/Square-Linie mit Accent und Slide | Kurze, skalensichere Akkordschläge | Hoover-, Pulse- und Siren-Klangfarben | Noise, Drone und Übergangseffekte |
+| Kick, Snare, Clap, Hats, Tom und Ride | Monophone Saw-/Square-Linie mit Accent, Slide und Verzerrer | Kurze, skalensichere Akkordschläge | Hoover-, Pulse- und Siren-Klangfarben | Noise, Drone und Übergangseffekte |
 
 ## Szenenbogen
 
@@ -91,7 +91,7 @@ Spuren und Szenenfolge. Ein Zug an einem Regler ist ein einziger Undo-Schritt.
 Solange Musik läuft, bleibt der Bildschirm an.
 
 **Im Raster lesen:** Drum-Steps zeigen ihre Stimmen als Buchstaben (K Kick,
-S Snare, C Clap, H Closed Hat, O Open Hat, T Tom), Steps der Melodiespuren die
+S Snare, C Clap, H Closed Hat, O Open Hat, T Tom, R Ride), Steps der Melodiespuren die
 Tonstufe als Zahl (1 Grundton bis 7 Septime). Mit **Vorhören** (an, abschaltbar
 in den Step-Details) erklingt ein Step einmal, wenn du ihn bei gestoppter Musik
 setzt oder änderst.
@@ -118,6 +118,16 @@ Drop am nächsten Takt. Am Button rastet ein kurzes Tippen den Break ein, das
 nächste bringt den Drop. Stumm sieht live wie im Mixer gleich aus:
 bernsteinfarben und durchgestrichen. Nichts davon landet im Projekt oder in der
 Undo-Liste.
+
+**Typische Patterns:** Neue Projekte, „R · Typisch“ und Auto-Acid bauen Linien
+im Acid-Idiom: ein Motiv aus einem oder zwei Takten, das sich wiederholt und im
+letzten Takt antwortet, auf Sechzehnteln mit wenigen Pausen, vor allem Grundton,
+dazu Quinte, Septime und Terz, mit Oktavsprüngen, Akzenten und Slides. Die
+Drums spielen je Szene einen Techno-Groove: Kick auf den Vierteln (im Break
+nicht), Clap auf zwei und vier, offene Hat auf dem Offbeat, geschlossene Hats
+dazwischen, im Peak der Ride darüber und am Phrasenende ein Fill. Das
+Druck-Makro der 303 fährt neben der Resonanz einen Verzerrer hoch, mit
+Pegelausgleich, damit es dreckiger und nicht nur lauter wird.
 
 **Auto-Acid:** Ein Klick auf **Auto-Acid** und Kitty spielt endlos Acid Techno
 und regelt alles selbst. Die Musik läuft in Spannungsbögen: *Fluss* → *Aufbau*
