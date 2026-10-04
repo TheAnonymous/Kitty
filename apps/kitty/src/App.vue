@@ -62,7 +62,7 @@ import {
 } from "./transfer";
 
 const TRACK_LABELS: Record<TrackKind, { name: string; short: string; description: string }> = {
-  drums: { name: "Drum Machine", short: "DRUMS", description: "Kick, Snare, Clap, Hats und Tom" },
+  drums: { name: "Drum Machine", short: "DRUMS", description: "Kick, Snare, Clap, Hats, Tom und Ride" },
   acid: { name: "Acid Bass", short: "ACID", description: "Monophone 303-Linie mit Accent und Slide" },
   stab: { name: "Stab", short: "STAB", description: "Kurze, skalensichere Akkordschläge" },
   rave: { name: "Rave Lead", short: "RAVE", description: "Hoover-, Pulse- und Siren-Farben" },
@@ -72,7 +72,7 @@ const TRACK_LABELS: Record<TrackKind, { name: string; short: string; description
 const MACRO_LABELS: Record<MacroKind, string> = { color: "Farbe", pressure: "Druck", space: "Raum", motion: "Bewegung", density: "Dichte" };
 const MACRO_HINTS: Record<TrackKind, Record<MacroKind, string>> = {
   drums: { color: "Macht Hats und Transienten heller oder dunkler.", pressure: "Verdichtet Kick und Snare kontrolliert.", space: "Gibt dem Kit einen kurzen Raum.", motion: "Bewegt Delay und rhythmische Wiederholungen.", density: "Gewichtet aktive Treffer, ohne neue Steps zu setzen." },
-  acid: { color: "Öffnet oder schließt den Acid-Filter.", pressure: "Erhöht Resonanz und kontrollierte Verdichtung.", space: "Mischt kurzes Echo und Raum hinzu.", motion: "Verstärkt Filter- und Delaybewegung.", density: "Gewichtet die Linie im Groove." },
+  acid: { color: "Öffnet oder schließt den Acid-Filter.", pressure: "Erhöht Resonanz und fährt den Verzerrer hoch.", space: "Mischt kurzes Echo und Raum hinzu.", motion: "Verstärkt Filter- und Delaybewegung.", density: "Gewichtet die Linie im Groove." },
   stab: { color: "Verschiebt den Akkord zwischen dunkel und brillant.", pressure: "Macht den Anschlag kompakter und härter.", space: "Verlängert die räumliche Fahne.", motion: "Gibt den Stabs rhythmische Echos.", density: "Gewichtet die gesetzten Akkordschläge." },
   rave: { color: "Regelt die Brillanz der Lead-Farbe.", pressure: "Verdichtet den Hoover- oder Siren-Ton.", space: "Fügt kontrolliertes Echo und Hall hinzu.", motion: "Erhöht die Bewegung im Delay.", density: "Gewichtet die Lead-Figur im Mix." },
   texture: { color: "Formt Rauschen und Drone von dunkel bis hell.", pressure: "Verdichtet den Hintergrund ohne Pegelsprung.", space: "Vergrößert die Hallfahne der Textur.", motion: "Belebt Übergänge mit Feedback.", density: "Gewichtet die gesetzten Texture-Impulse." },

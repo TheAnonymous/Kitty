@@ -26,7 +26,7 @@ export const SCALES = ["minor", "phrygian", "harmonicMinor"] as const;
 export const DYNAMICS = ["ghost", "normal", "accent"] as const;
 export const STEP_LENGTHS = ["short", "normal", "long"] as const;
 export const VARIATION_AMOUNTS = ["subtle", "lively", "bold"] as const;
-export const DRUM_VOICES = ["kick", "snare", "clap", "closedHat", "openHat", "tom"] as const;
+export const DRUM_VOICES = ["kick", "snare", "clap", "closedHat", "openHat", "tom", "ride"] as const;
 export const MACRO_KINDS = ["color", "pressure", "space", "motion", "density"] as const;
 
 export const SOUND_PRESETS = {

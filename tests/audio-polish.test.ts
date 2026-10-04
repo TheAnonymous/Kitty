@@ -49,7 +49,7 @@ describe("Sound-Polish-Verträge", () => {
 
   it("hält die festen Performance-Offsets ohne Zufallsdrift fest", () => {
     expect(TRACK_TIMING_OFFSETS_MS).toEqual({ acid: 0, rave: 2, stab: 5, texture: 8 });
-    expect(DRUM_TIMING_OFFSETS_MS).toEqual({ kick: 0, closedHat: 3, tom: 5, openHat: 6, snare: 8, clap: 8 });
+    expect(DRUM_TIMING_OFFSETS_MS).toEqual({ kick: 0, closedHat: 3, ride: 4, tom: 5, openHat: 6, snare: 8, clap: 8 });
     for (let bar = 0; bar < 4; bar += 1) {
       for (let step = 0; step < 16; step += 1) {
         expect(Math.abs(positionalVelocity(bar, step) - 1)).toBeLessThanOrEqual(0.06);
@@ -176,5 +176,35 @@ describe("Klangüberarbeitung", () => {
       // Bei Werksfarbe steht der Cutoff über 300 Hz, statt unter 200 Hz zu kleben.
       expect(acidCutoff(preset, 0.64)).toBeGreaterThan(300);
     }
+  });
+});
+
+describe("303-Verzerrer", () => {
+  it("clippt asymmetrisch, monoton und bleibt in ±1", async () => {
+    const { driveSample, driveCompensation } = await import("@/audio/distortion");
+    let previous = -Infinity;
+    for (let value = -1; value <= 1; value += 0.01) {
+      const sample = driveSample(value);
+      expect(sample).toBeGreaterThanOrEqual(previous);
+      expect(Math.abs(sample)).toBeLessThanOrEqual(1);
+      previous = sample;
+    }
+    expect(driveSample(0)).toBe(0);
+    expect(Math.abs(driveSample(-1))).toBeLessThan(driveSample(1));
+    for (let amount = 0; amount <= 1; amount += 0.1) expect(driveCompensation(amount)).toBeGreaterThan(0);
+    // More drive needs less make-up gain.
+    expect(driveCompensation(1)).toBeLessThan(driveCompensation(0));
+  });
+
+  it("fährt den Verzerrer mit Druck und Akzent hoch, begrenzt", async () => {
+    const { acidDrive, SOUND_SAFETY_LIMITS } = await import("@/domain/sound-presets");
+    for (const preset of SOUND_PRESETS.acid) {
+      expect(acidDrive(preset, 1)).toBeGreaterThan(acidDrive(preset, 0));
+      expect(acidDrive(preset, 0.5, true)).toBeGreaterThan(acidDrive(preset, 0.5));
+      expect(acidDrive(preset, 1, true)).toBeLessThanOrEqual(SOUND_SAFETY_LIMITS.drive);
+    }
+    // Venom bites hardest, Rubber stays round.
+    expect(acidDrive("venom", 0.5)).toBeGreaterThan(acidDrive("silverbox", 0.5));
+    expect(acidDrive("rubber", 0.5)).toBeLessThan(acidDrive("silverbox", 0.5));
   });
 });

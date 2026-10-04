@@ -98,12 +98,21 @@ describe("zentraler Store", () => {
 
   it("erzwingt Zwei-Stimmen-Limit und Drumkonflikte auch über Aktionen", () => {
     const store = new KittyStore(createFactoryProject());
+    const voices = () => store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[0]!.drumVoices;
     store.dispatch({ type: "ui/select-step", bar: 0, step: 0 });
-    store.dispatch({ type: "step/drum-voice", voice: "closedHat" });
+    expect(voices()).toEqual(["kick"]);
+    // The tom clashes with the kick.
     store.dispatch({ type: "step/drum-voice", voice: "tom" });
-    expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[0]!.drumVoices).toEqual(["kick"]);
+    expect(voices()).toEqual(["kick"]);
     store.dispatch({ type: "step/drum-voice", voice: "clap" });
+    // Two voices at most.
     store.dispatch({ type: "step/drum-voice", voice: "snare" });
-    expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[0]!.drumVoices).toEqual(["kick", "clap"]);
+    expect(voices()).toEqual(["kick", "clap"]);
+    store.dispatch({ type: "step/drum-voice", voice: "clap" });
+    store.dispatch({ type: "step/drum-voice", voice: "closedHat" });
+    expect(voices()).toEqual(["kick", "closedHat"]);
+    // Closed and open hat clash.
+    store.dispatch({ type: "step/drum-voice", voice: "openHat" });
+    expect(voices()).toEqual(["kick", "closedHat"]);
   });
 });

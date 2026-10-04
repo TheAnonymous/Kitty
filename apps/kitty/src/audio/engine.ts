@@ -6,7 +6,7 @@ import {
 } from "klangwerk/tone";
 import { createFactoryProject } from "../domain/defaults";
 import { scaleChord, scaleDegreeMidi } from "../domain/music";
-import { acidCutoff, acidEnvelopeOctaves, acidStepParameters, presetDefinition, safeEffectParameters } from "../domain/sound-presets";
+import { acidCutoff, acidDrive, acidEnvelopeOctaves, acidStepParameters, presetDefinition, safeEffectParameters } from "../domain/sound-presets";
 import { allowsRatchet, loopPosition, sceneSteps, stepChance, stepRatchet } from "../domain/patterns";
 import type { DrumVoice, ProjectV1, SoundPresetId, SoundPresetMap, Step, TrackKind, TrackMacros, TrackPattern } from "../domain/types";
 import { SOUND_PRESETS, TRACK_KINDS } from "../domain/types";
@@ -33,6 +33,7 @@ import {
   setTrackGraphVolume,
   type TrackGraph,
 } from "./graph";
+import { AcidDrive } from "./distortion";
 import { MetalNoise } from "./metal";
 import { BarQueuedTransport, type SequencerPosition } from "./transport";
 import type { PerformanceFilter } from "./performance";
@@ -608,6 +609,11 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: SoundNode,
   const openHatFilter = new LeanFilter({ type: "highpass", frequency: recipe.hats.openHighpass, rolloff: -24 });
   const openHatPan = new Panner(0.27 * panScale).connect(output);
   openHatFilter.connect(openHatPan);
+  // The ride rings through a bell band before its high-pass.
+  const rideBell = new LeanFilter({ type: "peaking", frequency: recipe.ride.bell, Q: 1.4, gain: 5 });
+  const rideFilter = new LeanFilter({ type: "highpass", frequency: recipe.ride.highpass, rolloff: -12 });
+  const ridePan = new Panner(0.34 * panScale).connect(output);
+  rideBell.chain(rideFilter, ridePan);
   const tomFilter = new LeanFilter({ type: "lowpass", frequency: recipe.tom.lowpass, rolloff: -12 });
   const tomPan = new Panner(-0.12 * panScale).connect(output);
   tomFilter.connect(tomPan);
@@ -636,7 +642,8 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: SoundNode,
   const openHat = new LeanEnvelope({ attack: 0.001, decay: recipe.hats.openDecay, sustain: 0, release: Math.max(0.025, recipe.hats.openDecay * 0.45) }).connect(openHatFilter);
   // Hats: the 808/909 metal of six square waves, with a breath of the kit's noise for the sizzle.
   const metal = new MetalNoise(recipe.hats.frequency).start();
-  metal.fan(closedHat, openHat);
+  const ride = new LeanEnvelope({ attack: 0.002, decay: recipe.ride.decay, sustain: 0, release: recipe.ride.decay * 0.5 }).connect(rideBell);
+  metal.fan(closedHat, openHat, ride);
   const hatNoise = new Gain(HAT_NOISE_LEVEL);
   hatNoise.fan(closedHat, openHat);
   drumNoise.fan(snareNoise, ...clapNoises, clapTail, hatNoise);
@@ -668,7 +675,7 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: SoundNode,
         envelope: { attack: 0.003, decay: recipe.kick.subTail.decay, sustain: 0, release: recipe.kick.subTail.release, attackCurve: "exponential" },
       }).connect(subHighpass)
     : null;
-  const nodes: SoundNode[] = [kick, snareBody, tom, drumNoise, snareNoise, ...clapNoises, clapTail, metal, hatNoise, closedHat, openHat, snareFilter, snarePan, clapFilter, clapPan, closedHatFilter, closedHatPan, openHatFilter, openHatPan, tomFilter, tomPan, output];
+  const nodes: SoundNode[] = [kick, snareBody, tom, drumNoise, snareNoise, ...clapNoises, clapTail, metal, hatNoise, closedHat, openHat, ride, rideBell, rideFilter, ridePan, snareFilter, snarePan, clapFilter, clapPan, closedHatFilter, closedHatPan, openHatFilter, openHatPan, tomFilter, tomPan, output];
   if (transient && transientFilter) nodes.push(transient, transientFilter);
   if (subHighpass && subFilter && subSaturator && subTail) nodes.push(subTail, subHighpass, subFilter, subSaturator);
   const trigger = (voice: DrumVoice, step: Step, time: number, velocity: number, root: number | undefined) => {
@@ -687,6 +694,7 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: SoundNode,
       clapTail.triggerAttackRelease(recipe.clap.decay * 3.2, voiceTime + recipe.clap.spacing * 3, velocity * recipe.clap.level * 0.6);
     } else if (voice === "closedHat") triggerHat(closedHat, "32n", voiceTime, velocity * recipe.hats.level);
     else if (voice === "openHat") triggerHat(openHat, "8n", voiceTime, velocity * recipe.hats.level * 0.82);
+    else if (voice === "ride") ride.triggerAttackRelease(recipe.ride.decay, voiceTime, velocity * recipe.ride.level);
     else tom.triggerAttackRelease(hertz(recipe.tom.note), seconds("8n"), voiceTime, velocity * recipe.tom.level);
   };
   return {
@@ -705,6 +713,7 @@ function createDrumBank(preset: SoundPresetMap["drums"], destination: SoundNode,
       [kick, snareBody, tom, snareNoise, ...clapNoises, clapTail, transient, subTail].forEach((voice) => voice?.triggerRelease(time));
       closedHat.triggerRelease(time);
       openHat.triggerRelease(time);
+      ride.triggerRelease(time);
     },
     dispose: () => { sleep.dispose(); nodes.forEach((node) => node.dispose()); },
   };
@@ -715,7 +724,9 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: SoundNode, 
   const recipe = definition.synthesis;
   const output = new Gain(definition.level);
   const sleep = new SleepyOutput(output, destination, alwaysAwake);
-  const ampEnvelope = new LeanEnvelope(definition.envelope).connect(output);
+  // The 303 goes into its distortion pedal, as most acid does.
+  const drive = new AcidDrive(recipe.drive.tone).connect(output);
+  const ampEnvelope = new LeanEnvelope(definition.envelope).connect(drive);
   const voiceDrive = new CharacterSaturator(definition.channel.saturationCurve);
   voiceDrive.connect(ampEnvelope);
   const filter = new LeanFilter({ type: "lowpass", frequency: recipe.filterBase, Q: recipe.filterQ, rolloff: -24 }).connect(voiceDrive);
@@ -746,6 +757,7 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: SoundNode, 
       else oscillator.frequency.setValueAtTime(frequency, time);
       voiceDrive.setCurve(definition.channel.saturationCurve, 0.012, time);
       voiceDrive.setAmount(effects.saturation, 0.012, time);
+      drive.setDrive(acidDrive(preset, macros.pressure, accent), 0.012, time);
       filter.Q.rampTo(effects.q, 0.018, time);
       // Color is the cutoff knob; the envelope sweeps above it, accents further.
       const cutoff = acidCutoff(preset, macros.color);
@@ -774,7 +786,7 @@ function createAcidBank(preset: SoundPresetMap["acid"], destination: SoundNode, 
       sleep.dispose();
       oscillator.stop(currentTime());
       oscillator.dispose();
-      [filterEnvelope, filter, voiceDrive, ampEnvelope, output].forEach((node) => node.dispose());
+      [filterEnvelope, filter, voiceDrive, ampEnvelope, drive, output].forEach((node) => node.dispose());
     },
   };
 }
@@ -1143,7 +1155,7 @@ function schedulePresetExample(bank: VoiceBank, track: TrackKind, preset: SoundP
   const context = (step: number, legato = false, continuesLegato = false): TriggerContext => ({ tempo, scene: 0, bar: 0, step, legato, continuesLegato });
   const makeStep = (overrides: Partial<Step> = {}): Step => ({ enabled: true, drumVoices: [], degree: 0, octave: 2, dynamics: "normal", length: "normal", slide: false, ...overrides });
   if (track === "drums") {
-    const hits: [number, DrumVoice[]][] = [[0.08, ["kick"]], [0.32, ["closedHat"]], [0.56, ["snare", "clap"]], [0.82, ["openHat"]], [1.08, ["tom"]], [1.36, ["kick", "closedHat"]]];
+    const hits: [number, DrumVoice[]][] = [[0.08, ["kick"]], [0.32, ["closedHat"]], [0.56, ["snare", "clap"]], [0.82, ["openHat", "ride"]], [1.08, ["tom"]], [1.36, ["kick", "closedHat"]]];
     hits.forEach(([time, drumVoices], index) => {
       try {
         bank.trigger([], makeStep({ drumVoices, dynamics: index === 0 ? "accent" : "normal" }), time, 0.86 * (0.78 + macros.density * 0.2), macros, context(index));
