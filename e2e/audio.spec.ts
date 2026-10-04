@@ -91,6 +91,8 @@ test("hält den Signalweg schlank genug für Wiedergabe ohne Aussetzer", async (
   const nodes = await page.evaluate(() => window.__kittyAudioTest!.countEngineNodes());
   expect(nodes.total).toBeLessThanOrEqual(560);
   expect(nodes.constantSources).toBeLessThanOrEqual(20);
+  // The 303 runs through its diode ladder worklet, under the production CSP too, not the biquad fallback.
+  expect(nodes.worklets).toBe(1);
 });
 
 test("stellt den Offline-Testpfad ohne Query nicht bereit", async ({ page }) => {

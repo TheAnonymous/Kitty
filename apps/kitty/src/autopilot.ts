@@ -275,7 +275,8 @@ export class Autopilot {
           space: round(inBreak ? 0.45 : 0.12 + 0.18 * tension),
         },
       },
-      { scene, track: "drums", values: { pressure: round(0.5 + 0.4 * tension) } },
+      // More tension, more rumble under the kick.
+      { scene, track: "drums", values: { pressure: round(0.5 + 0.4 * tension), space: round(0.35 + 0.4 * tension) } },
       { scene, track: "texture", values: { motion: round(0.35 + 0.55 * tension) } },
     ];
   }

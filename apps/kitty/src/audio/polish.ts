@@ -207,3 +207,46 @@ export function kickFrequency(rootMidi: number | undefined, centerHz: number): n
   }
   return best;
 }
+
+/**
+ * The 303's accent sweep: every accent charges a capacitor that bends the
+ * cutoff up and drains slowly, so accents close together climb on each other
+ * (the "wow" of an acid line), and the charge rises smoothly, so the peak
+ * comes a moment after the note. The resonance knob deepens it.
+ */
+export const ACCENT_SWEEP_RISE_SECONDS = 0.016;
+export const ACCENT_SWEEP_DECAY_SECONDS = 0.2;
+/** The highest the sweep climbs, in octaves above the cutoff. */
+export const ACCENT_SWEEP_CEILING_OCTAVES = 1.4;
+/** After three time constants the rise counts as done and the drain begins. */
+export const ACCENT_SWEEP_RISE_END = 3 * ACCENT_SWEEP_RISE_SECONDS;
+
+/** One accent's charge: it rises from `from` towards `peak` (octaves) from `time` on. */
+export interface AccentSweep {
+  time: number;
+  from: number;
+  peak: number;
+}
+
+/** How deep one accent sweeps (octaves): `base`, plus `resonance` with the resonance fully up. */
+export interface AccentSweepDepth {
+  base: number;
+  resonance: number;
+}
+
+/** Where the sweep stands at `time`, in octaves. */
+export function accentSweepAt(sweep: AccentSweep | null, time: number): number {
+  if (!sweep) return 0;
+  const elapsed = time - sweep.time;
+  if (!(elapsed > 0)) return sweep.from;
+  const rising = (seconds: number) => sweep.peak + (sweep.from - sweep.peak) * Math.exp(-seconds / ACCENT_SWEEP_RISE_SECONDS);
+  if (elapsed < ACCENT_SWEEP_RISE_END) return rising(elapsed);
+  return rising(ACCENT_SWEEP_RISE_END) * Math.exp(-(elapsed - ACCENT_SWEEP_RISE_END) / ACCENT_SWEEP_DECAY_SECONDS);
+}
+
+/** An accent at `time` charges on top of what the last ones left; `resonance` runs from 0 to 1. */
+export function chargeAccentSweep(previous: AccentSweep | null, time: number, depth: AccentSweepDepth, resonance: number): AccentSweep {
+  const from = accentSweepAt(previous, time);
+  const amount = Math.max(0, depth.base + clamp(finite(resonance, 0), 0, 1) * depth.resonance);
+  return { time, from, peak: Math.min(ACCENT_SWEEP_CEILING_OCTAVES, from + amount) };
+}

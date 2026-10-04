@@ -50,7 +50,7 @@ verbindlich ist in jedem Fall `npm run verify`.
 | Drum Machine | Acid Bass | Stab | Rave Lead | Texture / FX |
 | --- | --- | --- | --- | --- |
 | ![Schwarze Drum Machine mit roten Pads und massiven Percussion-Reglern](docs/assets/instruments/kitty-drums.webp) | ![Schwarzer Acid-Synth mit großem Filterregler und gelbgrüner Signallinie](docs/assets/instruments/kitty-acid-bass.webp) | ![Schwarzes Stab-Modul mit drei Gruppen aus metallischen Akkordplatten](docs/assets/instruments/kitty-stab.webp) | ![Schwarzes Rave-Modul mit zentralem Hoover-Regler und rotem Sirenenbogen](docs/assets/instruments/kitty-rave.webp) | ![Schwarzes Texture-Modul mit Noise-Fläche und ansteigenden roten Lichtern](docs/assets/instruments/kitty-texture.webp) |
-| Kick, Snare, Clap, Hats, Tom und Ride | Monophone Saw-/Square-Linie mit Accent, Slide und Verzerrer | Kurze, skalensichere Akkordschläge | Hoover-, Pulse- und Siren-Klangfarben | Noise, Drone und Übergangseffekte |
+| Kick mit Rumble, Snare, Clap, Hats, Tom und Ride | Monophone Saw-/Square-Linie durch Diode-Ladder mit Accent-Sweep, Slide und Verzerrer | Kurze, skalensichere Akkordschläge | Hoover-, Pulse- und Siren-Klangfarben | Noise, Drone und Übergangseffekte |
 
 ## Szenenbogen
 
@@ -129,6 +129,15 @@ dazwischen, im Peak der Ride darüber und am Phrasenende ein Fill. Das
 Druck-Makro der 303 fährt neben der Resonanz einen Verzerrer hoch, mit
 Pegelausgleich, damit es dreckiger und nicht nur lauter wird.
 
+**Klang der 303 und der Kick:** Die 303 läuft durch einen nachgebauten
+Diode-Ladder-Filter (ein AudioWorklet): Mit steigender Resonanz dünnt das Band
+unter dem Cutoff aus und der Resonanzpeak quietscht, statt nur zu pfeifen.
+Akzente laden wie beim Original eine Sweep-Spannung auf, dicht folgende Akzente
+klettern also immer höher. Wo ein Browser keine AudioWorklets kann, bleibt der
+frühere Biquad-Filter. Unter jeder Kick liegt ein Rumble: die Kick in einem
+dunklen Hall, der bei jedem Schlag wegduckt und dazwischen anschwillt; das
+Raum-Makro der Drums regelt, wie viel davon kommt.
+
 **Auto-Acid:** Ein Klick auf **Auto-Acid** und Kitty spielt endlos Acid Techno
 und regelt alles selbst. Die Musik läuft in Spannungsbögen: *Fluss* → *Aufbau*
 → *Break* → *Peak* → *Abbau*, der erste Bogen beginnt mit einem *Einstieg*.
@@ -172,9 +181,13 @@ Kompression und parallele vollständig-wet Delay-/Hall-Returns. Ein hörbarer
 Kick duckt Acid, Stab, Rave und Texture tempoabhängig; der Master endet nach
 Glue, Soft-Clip und Limiter in Fader und echtem dB-/Peak-Hold-Metering.
 Filter, EQ, Chorus, Vibrato und alle Stimmen sind exakte Nachbauten der
-Tone.js-Bausteine aus nativen Web-Audio-Knoten: Eine Sitzung braucht rund 500
+Tone.js-Bausteine aus nativen Web-Audio-Knoten: Eine Sitzung braucht rund 400
 statt 1.640 Knoten und spielt in Chromium ohne Aussetzer; ruhende Stimmbänke
 werden bis zum nächsten Einsatz abgekoppelt. Ein Audiotest hält dieses Budget.
+Der Diode-Ladder der 303 ist ein AudioWorklet aus einer Blob-URL; die
+Content-Security-Policy braucht dafür `script-src blob:`, was sie für den
+Aufnahme-Worklet ohnehin schon erlaubt. Der Audiotest prüft gegen den
+Produktions-Build, dass der 303 wirklich über das Worklet läuft.
 
 Der Speicher verwaltet höchstens acht benannte Projekte. Primärstände und die
 jeweils letzte gültige Sicherung liegen unter versionierten `kitty.*.v1`-

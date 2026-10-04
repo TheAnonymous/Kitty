@@ -208,3 +208,177 @@ describe("303-Verzerrer", () => {
     expect(acidDrive("rubber", 0.5)).toBeLessThan(acidDrive("silverbox", 0.5));
   });
 });
+
+describe("Diode-Ladder des 303", () => {
+  const SAMPLE_RATE = 44_100;
+
+  async function kernel() {
+    const { LADDER_KERNEL_SOURCE } = await import("@/audio/ladder");
+    const Kernel = new Function(`${LADDER_KERNEL_SOURCE}; return DiodeLadderKernel;`)() as new (rate: number) => {
+      process(input: number, cutoff: number, k: number): number;
+      settle(): void;
+    };
+    return () => new Kernel(SAMPLE_RATE);
+  }
+
+  /** Gain in dB of a quiet sine through the ladder, after it settled. */
+  function sineGain(create: () => { process(input: number, cutoff: number, k: number): number }, hertz: number, cutoff: number, k: number): number {
+    const ladder = create();
+    const frames = Math.round(SAMPLE_RATE * 0.4);
+    let output = 0;
+    let input = 0;
+    for (let index = 0; index < frames; index += 1) {
+      const x = 0.001 * Math.sin((2 * Math.PI * hertz * index) / SAMPLE_RATE);
+      const y = ladder.process(x, cutoff, k);
+      if (index > frames / 2) {
+        output += y * y;
+        input += x * x;
+      }
+    }
+    return 10 * Math.log10(output / input);
+  }
+
+  it("lässt den Bass durch und fällt oberhalb des Cutoffs steil ab", async () => {
+    const create = await kernel();
+    expect(Math.abs(sineGain(create, 40, 2_000, 0))).toBeLessThan(1);
+    expect(sineGain(create, 8_000, 1_000, 0)).toBeLessThan(-40);
+  });
+
+  it("hebt mit Resonanz einen Peak über das ausgedünnte Band darunter", async () => {
+    const create = await kernel();
+    const scooped = sineGain(create, 300, 1_000, 15);
+    const peak = Math.max(...[900, 1_000, 1_100, 1_200, 1_300].map((hertz) => sineGain(create, hertz, 1_000, 15)));
+    expect(peak - scooped).toBeGreaterThan(12);
+    // Without feedback there is no peak at all.
+    expect(sineGain(create, 1_100, 1_000, 0)).toBeLessThan(sineGain(create, 300, 1_000, 0));
+  });
+
+  it("bleibt bei wilden Eingaben, Cutoffs und voller Resonanz endlich und begrenzt", async () => {
+    const create = await kernel();
+    const ladder = create();
+    let state = 7;
+    const random = () => {
+      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+      return state / 4_294_967_296;
+    };
+    let peak = 0;
+    for (let index = 0; index < SAMPLE_RATE * 2; index += 1) {
+      const cutoff = random() < 0.01 ? Number.NaN : random() * 40_000;
+      const y = ladder.process((random() * 2 - 1) * 6, cutoff, 16.4);
+      expect(Number.isFinite(y)).toBe(true);
+      peak = Math.max(peak, Math.abs(y));
+      if (index % 128 === 0) ladder.settle();
+    }
+    expect(peak).toBeLessThan(6);
+  });
+
+  it("bildet die Resonanz knapp unter die Selbstoszillation ab, steigend und sicher", async () => {
+    const { ladderFeedback, ladderResonance, LADDER_SELF_OSCILLATION } = await import("@/audio/ladder");
+    expect(ladderFeedback(0.5)).toBe(0);
+    expect(ladderFeedback(Number.NaN)).toBe(0);
+    let previous = -1;
+    for (let q = 0.5; q <= 12; q += 0.25) {
+      expect(ladderFeedback(q)).toBeGreaterThanOrEqual(previous);
+      expect(ladderFeedback(q)).toBeLessThan(LADDER_SELF_OSCILLATION);
+      previous = ladderFeedback(q);
+    }
+    expect(ladderResonance(9)).toBe(1);
+    // The knob's middle already sits well into the squelch.
+    expect(ladderResonance(4.75)).toBeGreaterThan(0.7);
+  });
+});
+
+describe("Akzent-Sweep des 303", () => {
+  const depth = { base: 0.32, resonance: 0.5 };
+
+  it("steigt sanft an und fließt danach langsam ab", async () => {
+    const { accentSweepAt, chargeAccentSweep, ACCENT_SWEEP_RISE_END } = await import("@/audio/polish");
+    expect(accentSweepAt(null, 3)).toBe(0);
+    const sweep = chargeAccentSweep(null, 1, depth, 0);
+    expect(sweep).toEqual({ time: 1, from: 0, peak: 0.32 });
+    // The peak comes a moment after the note.
+    expect(accentSweepAt(sweep, 1.005)).toBeGreaterThan(0);
+    expect(accentSweepAt(sweep, 1.005)).toBeLessThan(accentSweepAt(sweep, 1 + ACCENT_SWEEP_RISE_END));
+    expect(accentSweepAt(sweep, 1.2)).toBeLessThan(accentSweepAt(sweep, 1.1));
+    expect(accentSweepAt(sweep, 3)).toBeLessThan(0.001);
+  });
+
+  it("lässt dicht folgende Akzente aufeinander klettern, bis zur Decke", async () => {
+    const { chargeAccentSweep, ACCENT_SWEEP_CEILING_OCTAVES } = await import("@/audio/polish");
+    const sixteenth = 15 / 140;
+    let sweep = chargeAccentSweep(null, 0, depth, 0.5);
+    const peaks = [sweep.peak];
+    for (let index = 1; index < 8; index += 1) {
+      sweep = chargeAccentSweep(sweep, index * sixteenth, depth, 0.5);
+      peaks.push(sweep.peak);
+    }
+    expect(peaks[1]!).toBeGreaterThan(peaks[0]!);
+    expect(peaks[2]!).toBeGreaterThan(peaks[1]!);
+    expect(Math.max(...peaks)).toBeLessThanOrEqual(ACCENT_SWEEP_CEILING_OCTAVES);
+    // After a long rest an accent starts from scratch.
+    expect(chargeAccentSweep(sweep, 10, depth, 0.5).peak).toBeCloseTo(peaks[0]!, 3);
+  });
+
+  it("schwingt mit mehr Resonanz tiefer, je nach Preset", async () => {
+    const { chargeAccentSweep } = await import("@/audio/polish");
+    expect(chargeAccentSweep(null, 0, depth, 1).peak).toBeGreaterThan(chargeAccentSweep(null, 0, depth, 0).peak);
+    expect(chargeAccentSweep(null, 0, depth, Number.NaN).peak).toBe(depth.base);
+    const sweeps = Object.fromEntries(SOUND_PRESETS.acid.map((preset) => [preset, presetDefinition("acid", preset).synthesis.accentSweep]));
+    expect(sweeps.venom!.base).toBeGreaterThan(sweeps.silverbox!.base);
+    expect(sweeps.rubber!.base).toBeLessThan(sweeps.silverbox!.base);
+  });
+});
+
+describe("Kick-Rumble", () => {
+  function fakeContext(sampleRate = 44_100) {
+    return {
+      sampleRate,
+      createBuffer: (_channels: number, length: number) => {
+        const data = new Float32Array(length);
+        return { length, getChannelData: () => data };
+      },
+    } as unknown as BaseAudioContext;
+  }
+
+  it("baut einen reproduzierbaren, dunklen Hall mit Einheitsverstärkung im Kick-Band", async () => {
+    const { rumbleImpulse } = await import("@/audio/rumble");
+    const first = rumbleImpulse(fakeContext(), 1.1).getChannelData(0);
+    const again = rumbleImpulse(fakeContext(), 1.1).getChannelData(0);
+    expect(first.length).toBe(Math.round(1.1 * 44_100));
+    expect(Array.from(again.subarray(0, 4_000))).toEqual(Array.from(first.subarray(0, 4_000)));
+    expect(first.every(Number.isFinite)).toBe(true);
+    // A 60 Hz sine through the hall comes out at about its own level.
+    const gain = (hertz: number) => {
+      let re = 0;
+      let im = 0;
+      first.forEach((value, index) => {
+        re += value * Math.cos((2 * Math.PI * hertz * index) / 44_100);
+        im -= value * Math.sin((2 * Math.PI * hertz * index) / 44_100);
+      });
+      return Math.hypot(re, im);
+    };
+    const low = Math.sqrt([45, 60, 75, 90, 105].reduce((sum, hertz) => sum + gain(hertz) ** 2, 0) / 5);
+    expect(low).toBeGreaterThan(0.5);
+    expect(low).toBeLessThan(2);
+    // Dark: far less above 2 kHz.
+    const high = Math.sqrt([2_000, 3_000, 4_000].reduce((sum, hertz) => sum + gain(hertz) ** 2, 0) / 3);
+    expect(high).toBeLessThan(low / 30);
+    // It dies away: the last tenth holds next to nothing.
+    const energy = (values: Float32Array) => values.reduce((sum, value) => sum + value * value, 0);
+    expect(energy(first.subarray(Math.floor(first.length * 0.9)))).toBeLessThan(energy(first) * 1e-4);
+  });
+
+  it("schickt mehr Kick in den Hall, je mehr Raum, und hat in jedem Preset einen", async () => {
+    const { kickRumbleSend } = await import("@/domain/sound-presets");
+    for (const preset of SOUND_PRESETS.drums) {
+      const rumble = presetDefinition("drums", preset).synthesis.kick.rumble;
+      expect(rumble.level).toBeGreaterThan(0);
+      expect(kickRumbleSend(preset, 0.5)).toBeCloseTo(rumble.level, 6);
+      expect(kickRumbleSend(preset, 1)).toBeGreaterThan(kickRumbleSend(preset, 0));
+      expect(kickRumbleSend(preset, Number.NaN)).toBeCloseTo(rumble.level * 0.5, 6);
+    }
+    // Rumble rumbles most, Stahl least.
+    expect(kickRumbleSend("rumble", 0.5)).toBeGreaterThan(kickRumbleSend("warehouse", 0.5));
+    expect(kickRumbleSend("steel", 0.5)).toBeLessThan(kickRumbleSend("warehouse", 0.5));
+  });
+});
