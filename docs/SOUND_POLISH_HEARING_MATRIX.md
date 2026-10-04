@@ -22,10 +22,10 @@ Je Preset: bei allen Makros auf Mitte hören, dann jedes Makro einmal langsam vo
 
 | Spur / Preset | geprüft | Worauf achten |
 | --- | --- | --- |
-| Drums — Warehouse | [ ] | 909-Body, Click, dreifacher Clap, Hats |
-| Drums — Stahl | [ ] | kurzer höherer Punch, harter Mittenbiss |
-| Drums — Rumble | [ ] | trockener Attack, getrennte 40–110-Hz-Fahne; bei Makros auf 0 etwas leiser als vor dem Engine-Umbau (siehe unten) |
-| Acid — Silverbox | [ ] | klassisch, Accent, direktes Slide |
+| Drums — Warehouse | [ ] | 909-Body in der Tonart, Click, Clap mit Raum, metallische Hats |
+| Drums — Stahl | [ ] | kurzer höherer Punch, harter Click, helle Hats nicht schneidend |
+| Drums — Rumble | [ ] | trockener Attack, Fahne auf dem Kick-Ton, im Hard-Profil nicht dröhnend |
+| Acid — Silverbox | [ ] | klassisch, Accent, direktes Slide; Farbe von 0 bis 1 wie ein Cutoff-Regler |
 | Acid — Venom | [ ] | schnell, scharf, kontrollierte Sättigung |
 | Acid — Rubber | [ ] | tief, rund, längstes Glide |
 | Stab — Beton | [ ] | kurz, dunkel, eng; Anschlag ohne Knackser |
@@ -60,6 +60,31 @@ zu 2,9 ms lang auf der vorigen Tonhöhe (eine Kick mal mit 50 Hz, mal mit
 400 Hz). Jetzt stimmt die Tonhöhe ab dem ersten Sample. Messbar ist das vor
 allem bei Makros auf 0: Stab-Spitzen bis −1,8 dB, Drums Rumble −0,6 dB RMS.
 Beim Hören: Stab Beton, Chord und Flash sowie Drums Rumble bei Makros auf 0.
+
+## Klangüberarbeitung (2026-10)
+
+Gemessen mit Renderings derselben Engine, gehört noch nicht:
+
+- **Kick:** Der Pitch-Sweep folgt wieder Tone.js (Start bei Note × `octaves`).
+  Seit dem Umstieg auf Klangwerk begann er bei Note × 2^`octaves`, die
+  Warehouse-Kick also bei 1,5 kHz statt rund 220 Hz, Stahl bei 5,4 kHz. Die
+  Kick stimmt sich auf Grundton oder Quinte der Tonart (etwa 43–65 Hz statt fest
+  32–37 Hz; vorher lagen rund 70 % ihrer Energie unter 45 Hz). Der Click läuft
+  über einen eigenen Hochpass, die Rumble-Fahne klingt auf dem Kick-Ton.
+- **Hats:** 808/909-Metall aus sechs inharmonischen Rechtecken, dazu etwas
+  Rauschen; der Kanalfilter der Drums steht weiter offen. Schwerpunkt jetzt
+  bei rund 10 kHz statt 4,5 kHz.
+- **Clap:** Bandpass um 1 kHz wie beim 909 und eine kurze Raumfahne.
+- **303:** Die Farbe ist der Cutoff-Regler (exponentiell über rund vier
+  Oktaven, vorher klebte der Grund-Cutoff bei 64–198 Hz); die Hüllkurve
+  sweept darüber, höchstens bis 7,5 kHz. Der Ton hält länger, wie der VCA
+  einer 303.
+- **Mix:** Texture-Presets 6 dB lauter, Standardfader für neue Projekte:
+  Texture 0,84, Stab 0,85.
+
+Beim Hören besonders: Passt die Kick-Tonhöhe zum Bass (auch nach einem
+Tonartwechsel von Auto-Acid)? Hats hell, aber nicht scharf? 303 bei Farbe und
+Druck auf 1 nicht schmerzhaft? Rumble im Hard-Profil nicht dröhnend?
 
 ## Abschluss
 

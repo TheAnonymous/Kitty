@@ -70,9 +70,9 @@ export function createFactoryProject(profile: GenreProfile = "hybrid"): ProjectV
       solo: false,
       volume: instrument === "drums" ? 0.94
         : instrument === "acid" ? 0.88
-          : instrument === "stab" ? 0.82
+          : instrument === "stab" ? 0.85
             : instrument === "rave" ? 0.8
-              : 0.74,
+              : 0.84,
     })),
     scenes,
     sceneRepeats: DEFAULT_SCENE_REPEATS,

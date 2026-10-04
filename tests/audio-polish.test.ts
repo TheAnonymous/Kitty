@@ -5,6 +5,8 @@ import {
   DRUM_TIMING_OFFSETS_MS,
   duckEnvelope,
   faderGain,
+  kickFrequency,
+  membraneOctaves,
   positionalVelocity,
   riserDurationSeconds,
   stabVoicing,
@@ -12,7 +14,7 @@ import {
   TRACK_TIMING_OFFSETS_MS,
 } from "@/audio/polish";
 import { emptyStep } from "@/domain/patterns";
-import { safeEffectParameters } from "@/domain/sound-presets";
+import { ACID_ENVELOPE_CEILING, acidCutoff, acidEnvelopeOctaves, presetDefinition, safeEffectParameters } from "@/domain/sound-presets";
 import { SOUND_PRESETS, TRACK_KINDS, type Step, type TrackMacros } from "@/domain/types";
 import { createFactoryProject } from "@/domain/defaults";
 import { effectiveTrackGains } from "@/store/store";
@@ -128,3 +130,51 @@ describe("Sound-Polish-Verträge", () => {
 function enabledStep(slide: boolean): Step {
   return { ...emptyStep(), enabled: true, degree: 0, octave: 2, dynamics: "normal", length: "normal", slide };
 }
+
+describe("Klangüberarbeitung", () => {
+  it("stimmt die Kick auf Grundton oder Quinte nahe der Preset-Mitte", () => {
+    const a1 = 55;
+    // A-Moll: die Kick sitzt auf dem Grundton A1.
+    expect(kickFrequency(33, a1)).toBeCloseTo(55, 5);
+    // F: F1 liegt näher an 49 Hz als C2.
+    expect(kickFrequency(29, 49)).toBeCloseTo(43.654, 2);
+    // C: C1 wäre zu tief, die Quinte G1 trifft die Mitte.
+    expect(kickFrequency(24, 49)).toBeCloseTo(48.999, 2);
+    // Die Oktave des Grundtons spielt keine Rolle, ohne Tonart bleibt die Mitte.
+    expect(kickFrequency(57, 49)).toBeCloseTo(kickFrequency(33, 49), 5);
+    expect(kickFrequency(undefined, 49)).toBe(49);
+    for (let root = 0; root < 12; root += 1) {
+      const hertz = kickFrequency(24 + root, 49);
+      expect(hertz).toBeGreaterThan(40);
+      expect(hertz).toBeLessThan(62);
+    }
+  });
+
+  it("übersetzt Tones MembraneSynth-Faktor in echte Oktaven", () => {
+    expect(membraneOctaves(4.5)).toBeCloseTo(Math.log2(4.5), 10);
+    expect(membraneOctaves(1)).toBe(0);
+    expect(membraneOctaves(0.5)).toBe(0);
+    // Warehouse beginnt den Sweep bei G1 · 4,5 ≈ 220 Hz, nicht bei 49 Hz · 2^4,5.
+    const kick = presetDefinition("drums", "warehouse").synthesis.kick;
+    expect(49 * 2 ** membraneOctaves(kick.octaves)).toBeLessThan(260);
+  });
+
+  it("macht die Farbe der 303 zum Cutoff-Regler und begrenzt die Hüllkurvenspitze", () => {
+    for (const preset of SOUND_PRESETS.acid) {
+      const recipe = presetDefinition("acid", preset).synthesis;
+      expect(acidCutoff(preset, 0)).toBeCloseTo(recipe.filterBase, 5);
+      expect(acidCutoff(preset, 1)).toBeCloseTo(recipe.filterBase * 2 ** recipe.cutoffOctaves, 5);
+      let previous = 0;
+      for (let color = 0; color <= 1; color += 0.1) {
+        const cutoff = acidCutoff(preset, color);
+        expect(cutoff).toBeGreaterThan(previous);
+        previous = cutoff;
+        for (const boost of [1, recipe.accent.filterBoost]) {
+          expect(cutoff * 2 ** acidEnvelopeOctaves(preset, cutoff, boost)).toBeLessThanOrEqual(ACID_ENVELOPE_CEILING + 1e-6);
+        }
+      }
+      // Bei Werksfarbe steht der Cutoff über 300 Hz, statt unter 200 Hz zu kleben.
+      expect(acidCutoff(preset, 0.64)).toBeGreaterThan(300);
+    }
+  });
+});
