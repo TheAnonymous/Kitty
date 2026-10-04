@@ -86,9 +86,9 @@ Die Kürzel wirken überall außer in Eingabefeldern und Auswahllisten, also auc
 direkt nach einem Klick auf einen Button. Nach einem Mausklick ist die
 Leertaste Start/Stop; hat ein Button per Tastatur den Fokus, löst sie ihn aus.
 
-Beim ersten Besuch führt eine kurze Tour durch Start, Szenen, Spuren und
-Szenenfolge. Ein Zug an einem Regler ist ein einziger Undo-Schritt. Solange
-Musik läuft, bleibt der Bildschirm an.
+Beim ersten Besuch führt eine kurze Tour durch Start, Auto-Acid, Szenen,
+Spuren und Szenenfolge. Ein Zug an einem Regler ist ein einziger Undo-Schritt.
+Solange Musik läuft, bleibt der Bildschirm an.
 
 **Im Raster lesen:** Drum-Steps zeigen ihre Stimmen als Buchstaben (K Kick,
 S Snare, C Clap, H Closed Hat, O Open Hat, T Tom), Steps der Melodiespuren die
@@ -118,6 +118,23 @@ Drop am nächsten Takt. Am Button rastet ein kurzes Tippen den Break ein, das
 nächste bringt den Drop. Stumm sieht live wie im Mixer gleich aus:
 bernsteinfarben und durchgestrichen. Nichts davon landet im Projekt oder in der
 Undo-Liste.
+
+**Auto-Acid:** Ein Klick auf **Auto-Acid** und Kitty spielt endlos Acid Techno
+und regelt alles selbst. Die Musik läuft in Spannungsbögen: *Fluss* → *Aufbau*
+→ *Break* → *Peak* → *Abbau*, der erste Bogen beginnt mit einem *Einstieg*.
+Die Spannung des Moments bestimmt die Szene, Filter, Resonanz und Bewegung der
+303, welche Spuren spielen (Stab und Rave Lead kommen erst mit steigender
+Spannung dazu), einen Tiefpass, der sich im Einstieg öffnet, und einen
+Hochpass-Riser am Ende jedes Aufbaus. Im Break spielt die 303 allein mit
+hoher Resonanz, in den letzten zwei Takten nimmt **Break → Drop** Kick und Acid
+heraus, und der Peak kommt mit dem Drop auf den Takt. Jeder Bogen verändert
+die Acid-Linie, jeder dritte schreibt eine frische, jeder zweite wechselt den
+Acid-Klang, jeder vierte rückt die Tonart eine Quarte höher. Ein Bogen ist
+**kurz** (32 Takte), **mittel** (64) oder **lang** (88). Die Leiste zeigt Phase,
+Takt, Bogen und die Spannung; geschützte Takte bleiben unberührt, und du kannst
+jederzeit eingreifen. Alle Änderungen des Laufs sind zusammen ein einziger
+Undo-Schritt: Nach dem Ausschalten holt `Strg+Z` die Musik von vorher zurück.
+Gesichert wird währenddessen alle paar Sekunden.
 
 **Gleichtakt:** Ist die Groovebox in einem zweiten Tab offen und dort wie hier
 **Gleichtakt** an, starten und stoppen beide gemeinsam; wer startet, gibt das

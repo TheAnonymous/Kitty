@@ -4,6 +4,7 @@ import { sanitizeProject } from "../domain/sanitize";
 import type {
   AppState,
   DrumVoice,
+  GenreProfile,
   MacroKind,
   ProjectV1,
   RootNote,
@@ -13,9 +14,10 @@ import type {
   StepDynamics,
   StepLength,
   TrackKind,
+  TrackMacros,
   VariationAmount,
 } from "../domain/types";
-import { LOOP_LENGTHS, MAX_SWING, MAX_TEMPO, MIN_TEMPO, RATCHETS, SCENE_REPEATS, SOUND_PRESETS, STEP_CHANCES, STEPS_PER_PASS } from "../domain/types";
+import { LOOP_LENGTHS, MAX_SWING, MAX_TEMPO, MIN_TEMPO, RATCHETS, ROOT_NOTES, SCENE_REPEATS, SOUND_PRESETS, STEP_CHANCES, STEPS_PER_PASS } from "../domain/types";
 
 export type Action =
   | { type: "ui/select-scene"; scene: number }
@@ -48,6 +50,12 @@ export type Action =
   | { type: "step/probability"; value: number }
   | { type: "step/ratchet"; value: number }
   | { type: "track/loop"; value: number }
+  // The autopilot names scene and track itself; its changes are not single undo steps.
+  | { type: "auto/macros"; changes: { scene: number; track: TrackKind; values: Partial<TrackMacros> }[] }
+  | { type: "auto/vary"; scene: number; track: TrackKind; amount: VariationAmount }
+  | { type: "auto/typical"; scene: number; track: TrackKind; profile: GenreProfile }
+  | { type: "auto/preset"; track: TrackKind; value: SoundPresetId }
+  | { type: "auto/root"; value: RootNote }
   | { type: "track/macro"; macro: MacroKind; value: number }
   | { type: "track/vary" }
   | { type: "track/typical" }
@@ -64,6 +72,8 @@ export class KittyStore {
   private undoStack: ProjectV1[] = [];
   private redoStack: ProjectV1[] = [];
   private lastMerge: { key: string; at: number } | null = null;
+  /** Set while an autopilot run has not changed anything yet: its first change keeps the state before it as one undo step. */
+  private checkpointArmed = false;
 
   constructor(project: ProjectV1) {
     this.state = {
@@ -95,8 +105,17 @@ export class KittyStore {
     };
     this.undoStack = [];
     this.redoStack = [];
+    this.checkpointArmed = false;
     this.emit({ type: "autosave/status", status: "ready" });
   }
+
+  /** An autopilot run begins: one undo step will lead back to the music as it was before its first change. */
+  armCheckpoint(): void { this.checkpointArmed = true; }
+
+  disarmCheckpoint(): void { this.checkpointArmed = false; }
+
+  /** True while the armed run has not changed the music yet. */
+  get checkpointPending(): boolean { return this.checkpointArmed; }
 
   /**
    * `mergeKey` folds a stream of changes (a MIDI knob turning) into one undo
@@ -105,14 +124,21 @@ export class KittyStore {
   dispatch(action: Action, options: { mergeKey?: string } = {}): void {
     if (action.type === "history/undo") return this.undo(action);
     if (action.type === "history/redo") return this.redo(action);
-    const before = structuredClone(this.state.project);
+    const automatic = action.type.startsWith("auto/");
+    const before = !automatic || this.checkpointArmed ? structuredClone(this.state.project) : null;
     const changed = this.reduce(action);
-    if (changed) {
+    if (changed && automatic) {
+      this.lastMerge = null;
+      if (this.checkpointArmed && before) this.pushUndo(before);
+      this.checkpointArmed = false;
+      this.redoStack = [];
+      this.state.canRedo = false;
+      this.state.autosave = "saving";
+    } else if (changed && before) {
       const now = Date.now();
       const merged = options.mergeKey !== undefined && this.lastMerge?.key === options.mergeKey && now - this.lastMerge.at < MERGE_WINDOW_MS;
       this.lastMerge = options.mergeKey === undefined ? null : { key: options.mergeKey, at: now };
-      if (!merged) this.undoStack.push(before);
-      if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
+      if (!merged) this.pushUndo(before);
       this.redoStack = [];
       this.state.canUndo = true;
       this.state.canRedo = false;
@@ -207,6 +233,23 @@ export class KittyStore {
         else pattern.loopSteps = action.value;
         return true;
       }
+      case "auto/macros": {
+        let changed = false;
+        for (const change of action.changes) {
+          const pattern = patternAt(project, change.scene, change.track);
+          if (!pattern) continue;
+          for (const [macro, value] of Object.entries(change.values) as [MacroKind, number][]) changed = assign(pattern.macros, macro, clampNumber(value, 0, 1)) || changed;
+        }
+        return changed;
+      }
+      case "auto/vary": { const pattern = patternAt(project, action.scene, action.track); return pattern ? varyPattern(pattern, action.amount, ui.locks[action.track]) : false; }
+      case "auto/typical": { const pattern = patternAt(project, action.scene, action.track); const scene = project.scenes[action.scene]; return pattern && scene ? replaceWithTypical(pattern, action.profile, scene.role, ui.locks[action.track]) : false; }
+      case "auto/preset": {
+        if (!(SOUND_PRESETS[action.track] as readonly string[]).includes(action.value) || project.soundPresets[action.track] === action.value) return false;
+        (project.soundPresets as Record<TrackKind, SoundPresetId>)[action.track] = action.value;
+        return true;
+      }
+      case "auto/root": return (ROOT_NOTES as readonly string[]).includes(action.value) ? assign(project, "root", action.value) : false;
       case "track/macro": { const pattern = selectedPattern(this.state); return pattern ? assign(pattern.macros, action.macro, clampNumber(action.value, 0, 1)) : false; }
       case "track/vary": { const pattern = selectedPattern(this.state); return pattern ? varyPattern(pattern, ui.variationAmount, ui.locks[ui.selectedTrack]) : false; }
       case "track/typical": { const pattern = selectedPattern(this.state); const scene = project.scenes[ui.selectedScene]; return pattern && scene ? replaceWithTypical(pattern, project.profile, scene.role, ui.locks[ui.selectedTrack]) : false; }
@@ -251,6 +294,12 @@ export class KittyStore {
     this.emit(action);
   }
 
+  private pushUndo(project: ProjectV1): void {
+    this.undoStack.push(project);
+    if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
+    this.state.canUndo = true;
+  }
+
   private emit(action: Action): void { for (const listener of this.listeners) listener(this.state, action); }
 }
 
@@ -262,6 +311,10 @@ function assign<T extends object, K extends keyof T>(target: T, key: K, value: T
 
 function clamp(value: number, min: number, max: number): number { return Math.max(min, Math.min(max, Math.round(value))); }
 function clampNumber(value: number, min: number, max: number): number { return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min; }
+
+function patternAt(project: ProjectV1, scene: number, track: TrackKind) {
+  return project.scenes[scene]?.tracks.find((entry) => entry.instrument === track);
+}
 
 export function selectedPattern(state: AppState) {
   return state.project.scenes[state.ui.selectedScene]?.tracks.find((entry) => entry.instrument === state.ui.selectedTrack);

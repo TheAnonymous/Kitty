@@ -280,12 +280,14 @@ test("teilt ein Projekt als Link und übernimmt es als neues Projekt", async ({ 
   await expect(receiver.locator(".project-list button")).toHaveCount(2);
 });
 
-test("führt beim ersten Besuch durch vier Stationen und lässt sich wieder aufrufen", async ({ browser, baseURL }) => {
+test("führt beim ersten Besuch durch fünf Stationen und lässt sich wieder aufrufen", async ({ browser, baseURL }) => {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
   await page.goto(String(baseURL));
   await expect(page.getByRole("dialog", { name: "Start und Stop" })).toBeVisible();
-  await expect(page.locator(".kitty-tour__count")).toHaveText("1 / 4");
+  await expect(page.locator(".kitty-tour__count")).toHaveText("1 / 5");
+  await page.getByRole("button", { name: "Weiter" }).click();
+  await expect(page.getByRole("dialog", { name: "Auto-Acid" })).toBeVisible();
   await page.getByRole("button", { name: "Weiter" }).click();
   await expect(page.getByRole("dialog", { name: "Vier Szenen" })).toBeVisible();
   await page.keyboard.press("Enter");
@@ -301,7 +303,7 @@ test("führt beim ersten Besuch durch vier Stationen und lässt sich wieder aufr
   const help = page.getByRole("dialog", { name: "Hilfe und Tastenkürzel" });
   await expect(help).toContainText("Szene wählen");
   await help.getByRole("button", { name: "Tour starten" }).click();
-  await expect(page.locator(".kitty-tour__count")).toHaveText("1 / 4");
+  await expect(page.locator(".kitty-tour__count")).toHaveText("1 / 5");
   await page.keyboard.press("Escape");
   await expect(page.locator(".kitty-tour")).toHaveCount(0);
   await context.close();
@@ -616,4 +618,47 @@ test("führt bei vollen Plätzen von Neu zur Projektliste und benennt per Enter 
   await page.getByRole("button", { name: "Neu" }).click();
   await expect(page.getByRole("dialog", { name: "Lokale Projekte" })).toBeVisible();
   await expect(page.getByRole("dialog", { name: "Neues Werkprojekt" })).toHaveCount(0);
+});
+
+test("spielt mit Auto-Acid selbstständig Spannungsbögen und gibt die Musik danach zurück", async ({ page }) => {
+  test.setTimeout(90_000);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+  const acidBefore = await page.locator('.track-button[data-track="acid"]').getAttribute("aria-pressed");
+
+  await page.getByRole("button", { name: "KURZ", exact: true }).click();
+  const auto = page.getByRole("switch", { name: /AUTO-ACID/ });
+  await auto.click();
+  await expect(auto).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('.auto-phases [aria-current="step"]')).toHaveText("Einstieg");
+  await expect(page.locator(".transport-readout")).toContainText("Auto-Acid · Einstieg");
+  await expect(page.locator('.live-mute[data-track="rave"]')).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('.scene-pad[data-scene="0"]')).toHaveClass(/is-running/);
+  // The filter opens through the intro and the 303 follows the tension.
+  await expect.poll(async () => Number(await page.locator("[data-perf-filter]").inputValue()), { timeout: 5_000 }).toBeLessThan(0);
+  await expect(page.getByRole("button", { name: "Rückgängig" })).toBeEnabled();
+
+  // A short arc opens with four bars of intro, then the flow runs in the drive scene.
+  await expect(page.locator('.auto-phases [aria-current="step"]')).toHaveText("Fluss", { timeout: 20_000 });
+  await expect(page.locator('.scene-pad[data-scene="1"]')).toHaveClass(/is-running/, { timeout: 5_000 });
+  await expect(page.locator('.live-mute[data-track="stab"]')).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByRole("meter", { name: "SPANNUNG" })).toHaveAttribute("aria-valuetext", /steigt · Fluss/);
+  await expect(page.locator("[data-autopilot-progress]")).toContainText("BOGEN 1");
+  await expect.poll(async () => (await page.locator(".kitty-shell").getAttribute("data-triggered-tracks"))?.split(","), { timeout: 10_000 }).toContain("acid");
+
+  await auto.click();
+  await expect(auto).toHaveAttribute("aria-checked", "false");
+  await expect(page.locator(".kv-toast")).toContainText("Auto-Acid aus");
+  await expect(page.getByRole("button", { name: /STOP/ })).toBeVisible();
+  await expect(page.locator('.live-mute[data-track="rave"]')).toHaveAttribute("aria-pressed", "false", { timeout: 6_000 });
+  await expect(page.locator('.track-button[data-track="acid"]')).toHaveAttribute("aria-pressed", acidBefore!);
+
+  // Stopping the music ends a run as well.
+  await auto.click();
+  await expect(auto).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("button", { name: /STOP/ }).click();
+  await expect(auto).toHaveAttribute("aria-checked", "false");
+  expect(errors).toEqual([]);
 });
