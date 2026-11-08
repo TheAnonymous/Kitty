@@ -12,6 +12,6 @@
   "dependencies": {
     "@kinky-vibes/ui": "0.1.0",
     "klangwerk": "github:TheAnonymous/Klangwerk#bfd31d4a203bf9aca240eb1a1260bdad6620edd2",
-    "vue": "3.5.39"
+    "vue": "3.5.45"
   }
 }
